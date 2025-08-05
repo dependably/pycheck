@@ -1,0 +1,9 @@
+# Python Library Checker - Dependencies
+# This package uses only Python standard library modules
+# No external dependencies required
+
+# Development dependencies (optional)
+# pytest>=6.0.0
+# black>=22.0.0
+# flake8>=4.0.0
+# mypy>=0.900

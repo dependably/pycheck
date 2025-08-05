@@ -1,0 +1,8 @@
+# Development dependencies for Python Library Checker
+pytest>=6.0.0
+black>=22.0.0
+flake8>=4.0.0
+mypy>=0.900
+setuptools>=45
+wheel
+build

@@ -1,0 +1,17 @@
+# Include important project files
+include README.md
+include CLAUDE.md
+include requirements.txt
+include requirements-dev.txt
+include pyproject.toml
+include MANIFEST.in
+
+# Include test files
+recursive-include tests *.py
+
+# Exclude backup files and cache
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude *.backup
+global-exclude __pycache__
+global-exclude .DS_Store
