@@ -1,5 +1,14 @@
 # Python Library Checker
 
+[![CI](https://github.com/yourusername/python-library-checker/workflows/CI/badge.svg)](https://github.com/yourusername/python-library-checker/actions/workflows/ci.yml)
+[![Release](https://github.com/yourusername/python-library-checker/workflows/Release/badge.svg)](https://github.com/yourusername/python-library-checker/actions/workflows/release.yml)
+[![Security](https://github.com/yourusername/python-library-checker/workflows/Security/badge.svg)](https://github.com/yourusername/python-library-checker/actions/workflows/security.yml)
+[![codecov](https://codecov.io/gh/yourusername/python-library-checker/branch/main/graph/badge.svg)](https://codecov.io/gh/yourusername/python-library-checker)
+[![PyPI version](https://badge.fury.io/py/python-library-checker.svg)](https://badge.fury.io/py/python-library-checker)
+[![Python versions](https://img.shields.io/pypi/pyversions/python-library-checker.svg)](https://pypi.org/project/python-library-checker/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+
 A powerful command-line tool to analyze and clean up unused imports in Python files. Keep your Python code clean and efficient by automatically detecting and removing unnecessary imports.
 
 ## Features
@@ -213,47 +222,49 @@ The `--check` mode never modifies files, making it safe to run on any codebase.
 
 ## Contributing
 
-We welcome contributions! Here's how to get started:
+We welcome contributions from developers of all skill levels! Please see our [CONTRIBUTING.md](CONTRIBUTING.md) for comprehensive development guidelines.
 
-### Development Setup
+### Quick Start for Contributors
 
-1. Clone the repository:
+1. **Development Setup**: Clone the repository and set up your environment:
 ```bash
 git clone https://github.com/yourusername/PythonLibraryChecker.git
 cd PythonLibraryChecker
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -e ".[dev]"
 ```
 
-2. Run tests to verify everything works:
+2. **Code Quality Tools**: Ensure you have the required tools:
 ```bash
-python src/checker.py --check tests/
+black src/ tests/          # Code formatting
+flake8 src/ tests/         # Linting
+mypy src/                  # Type checking
+pytest tests/              # Testing
 ```
 
-### Running Tests
-
-The `tests/` directory contains various Python files for testing different scenarios:
-
+3. **Testing Your Changes**:
 ```bash
-# Test the tool on the test files
+# Test on various scenarios
 python src/checker.py --check tests/ --verbose
-
-# Test cleanup functionality (creates backups)
 python src/checker.py --cleanup tests/test_basic_unused.py
 ```
 
-### Code Style
+### How to Contribute
 
-- Follow PEP 8 guidelines
-- Use type hints where appropriate
-- Add docstrings for public methods
-- Keep line length under 120 characters
+- **🐛 Found a bug?** Use our [Bug Report Template](.github/ISSUE_TEMPLATE/bug_report.yml)
+- **💡 Have a feature idea?** Use our [Feature Request Template](.github/ISSUE_TEMPLATE/feature_request.yml)
+- **🔧 Ready to code?** Check our [Pull Request Template](.github/PULL_REQUEST_TEMPLATE.md)
 
-### Submitting Changes
+### Code Standards
 
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature-name`
-3. Make your changes with tests
-4. Test thoroughly on various Python files
-5. Submit a pull request with a clear description
+- **Python 3.7+** compatibility required
+- **Type hints** for all function signatures
+- **Black formatting** with 120-character line length
+- **Comprehensive tests** for new functionality
+- **Clear documentation** and docstrings
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed technical requirements, testing procedures, and development workflows.
 
 ## Troubleshooting
 

@@ -1,0 +1,208 @@
+name: Feature Request
+description: Suggest a new feature or enhancement for Python Library Checker
+title: "[FEATURE] Brief description of the feature"
+labels: ["enhancement", "needs-discussion"]
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a feature! Please provide detailed information to help us understand and evaluate your request.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Pre-submission Checklist
+      description: Please verify these steps before submitting
+      options:
+        - label: I have searched existing issues and discussions for similar requests
+          required: true
+        - label: This is a feature request, not a bug report
+          required: true
+        - label: I have considered whether this could be implemented as a plugin or external tool
+          required: true
+
+  - type: textarea
+    id: feature-summary
+    attributes:
+      label: Feature Summary
+      description: A clear and concise description of the feature you'd like to see added
+      placeholder: "Add support for configuration files to customize import analysis rules..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem-description
+    attributes:
+      label: Problem Description
+      description: What problem does this feature solve? What's the current limitation?
+      placeholder: |
+        Currently, the tool treats all unused imports the same way, but sometimes I want to:
+        - Ignore certain imports (like __future__ imports)
+        - Apply different rules to test files vs source files
+        - Configure which import patterns to check
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the solution you'd like to see implemented
+      placeholder: |
+        Add support for a .pylibcheck.toml configuration file that allows:
+        - Excluding specific imports or modules
+        - Setting different rules per directory
+        - Configuring output formats
+    validations:
+      required: true
+
+  - type: dropdown
+    id: feature-category
+    attributes:
+      label: Feature Category
+      description: What type of feature is this?
+      options:
+        - "Command-line interface enhancement"
+        - "Analysis engine improvement"
+        - "Configuration and customization"
+        - "Output and reporting"
+        - "Performance optimization"
+        - "Integration with other tools"
+        - "New analysis capabilities"
+        - "Developer experience"
+        - "Other"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority-level
+    attributes:
+      label: Priority Level
+      description: How important is this feature to your workflow?
+      options:
+        - "Critical - blocks my primary use case"
+        - "High - significantly improves my workflow"
+        - "Medium - would be nice to have"
+        - "Low - minor convenience"
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-cases
+    attributes:
+      label: Use Cases and Examples
+      description: Provide specific examples of how this feature would be used
+      placeholder: |
+        Use Case 1: Large codebase with different import rules
+        - Source files: Remove all unused imports
+        - Test files: Keep imports that might be used by fixtures
+        - Configuration: .pylibcheck.toml specifies rules per directory
+        
+        Use Case 2: CI/CD integration
+        - Need JSON output format for automated processing
+        - Want to fail builds only on certain types of unused imports
+    validations:
+      required: true
+
+  - type: textarea
+    id: implementation-ideas
+    attributes:
+      label: Implementation Ideas
+      description: Technical suggestions for how this could be implemented (optional)
+      placeholder: |
+        - Add a ConfigParser to read .pylibcheck.toml files
+        - Extend the ImportInfo class to include rule metadata
+        - Add output formatters for JSON, XML, etc.
+        - Use glob patterns for file-specific rules
+    validations:
+      required: false
+
+  - type: textarea
+    id: api-examples
+    attributes:
+      label: API/Interface Examples
+      description: Show what the new command-line options or configuration would look like
+      render: bash
+      placeholder: |
+        # Command-line example
+        python src/checker.py --check --config .pylibcheck.toml --format json src/
+        
+        # Configuration file example (.pylibcheck.toml)
+        [rules]
+        ignore_imports = ["__future__", "typing_extensions"]
+        
+        [rules.tests]
+        pattern = "tests/**/*.py"
+        allow_unused = ["pytest", "unittest.mock"]
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives-considered
+    attributes:
+      label: Alternatives Considered
+      description: What other approaches or workarounds have you considered?
+      placeholder: |
+        - Using existing tools like isort or autoflake
+        - Writing custom scripts to post-process output
+        - Manual configuration through environment variables
+    validations:
+      required: false
+
+  - type: dropdown
+    id: complexity-estimate
+    attributes:
+      label: Implementation Complexity
+      description: How complex do you think this feature would be to implement?
+      options:
+        - "Simple - small change to existing code"
+        - "Medium - new functionality but well-defined"
+        - "Complex - requires significant architectural changes"
+        - "Unknown - needs investigation"
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: compatibility
+    attributes:
+      label: Compatibility Considerations
+      description: Technical compatibility requirements
+      options:
+        - label: Should maintain backward compatibility with existing command-line interface
+          required: false
+        - label: Should work with Python 3.7+ (current supported versions)
+          required: false
+        - label: Should not introduce new external dependencies
+          required: false
+        - label: Should integrate well with existing CI/CD workflows
+          required: false
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: Any other relevant information, screenshots, or references
+      placeholder: |
+        - Links to similar features in other tools
+        - Performance considerations
+        - User experience mockups
+        - Related GitHub issues or discussions
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribution-interest
+    attributes:
+      label: Contribution Interest
+      description: Would you be interested in contributing to this feature?
+      options:
+        - label: I would like to implement this feature myself
+          required: false
+        - label: I can help with testing and feedback
+          required: false
+        - label: I can provide more detailed requirements if needed
+          required: false
+        - label: I have domain expertise relevant to this feature
+          required: false

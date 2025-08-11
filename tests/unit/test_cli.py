@@ -1,0 +1,328 @@
+"""Unit tests for CLI argument parsing functionality."""
+
+import argparse
+import pytest
+import sys
+import os
+from pathlib import Path
+from unittest.mock import patch, MagicMock
+
+# Add src directory to path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
+
+from checker import setup_argument_parser, validate_target_path, main, ImportCheckerError
+
+
+class TestValidateTargetPath:
+    """Test cases for validate_target_path function."""
+    
+    def test_validate_existing_file(self, tmp_path):
+        """Test validation of existing file."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("import os")
+        
+        result = validate_target_path(str(test_file))
+        assert isinstance(result, Path)
+        assert result == test_file
+    
+    def test_validate_existing_directory(self, tmp_path):
+        """Test validation of existing directory."""
+        result = validate_target_path(str(tmp_path))
+        assert isinstance(result, Path)
+        assert result == tmp_path
+    
+    def test_validate_nonexistent_path(self):
+        """Test validation of non-existent path."""
+        with pytest.raises(argparse.ArgumentTypeError) as excinfo:
+            validate_target_path("/nonexistent/path")
+        
+        assert "Path does not exist" in str(excinfo.value)
+    
+    def test_validate_relative_path(self, tmp_path):
+        """Test validation of relative path."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("import os")
+        
+        # Change to parent directory and use relative path
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path.parent)
+            relative_path = tmp_path.name + "/test.py"
+            
+            result = validate_target_path(relative_path)
+            assert isinstance(result, Path)
+            assert result.exists()
+        finally:
+            os.chdir(original_cwd)
+
+
+class TestSetupArgumentParser:
+    """Test cases for setup_argument_parser function."""
+    
+    def setup_method(self):
+        """Set up test instance."""
+        self.parser = setup_argument_parser()
+    
+    def test_parser_creation(self):
+        """Test that parser is created correctly."""
+        assert isinstance(self.parser, argparse.ArgumentParser)
+        assert self.parser.prog == "python-import-checker"
+    
+    def test_check_mode_argument(self, tmp_path):
+        """Test --check argument."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("import os")
+        
+        args = self.parser.parse_args(["--check", str(test_file)])
+        
+        assert args.check is True
+        assert args.cleanup is False
+        assert args.target == test_file
+    
+    def test_cleanup_mode_argument(self, tmp_path):
+        """Test --cleanup argument."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("import os")
+        
+        args = self.parser.parse_args(["--cleanup", str(test_file)])
+        
+        assert args.check is False
+        assert args.cleanup is True
+        assert args.target == test_file
+    
+    def test_mutually_exclusive_modes(self, tmp_path):
+        """Test that --check and --cleanup are mutually exclusive."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("import os")
+        
+        with pytest.raises(SystemExit):
+            self.parser.parse_args(["--check", "--cleanup", str(test_file)])
+    
+    def test_missing_mode_argument(self, tmp_path):
+        """Test that mode argument is required."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("import os")
+        
+        with pytest.raises(SystemExit):
+            self.parser.parse_args([str(test_file)])
+    
+    def test_recursive_default(self, tmp_path):
+        """Test that recursive is True by default."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("import os")
+        
+        args = self.parser.parse_args(["--check", str(test_file)])
+        assert args.recursive is True
+    
+    def test_no_recursive_argument(self, tmp_path):
+        """Test --no-recursive argument."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("import os")
+        
+        args = self.parser.parse_args(["--check", "--no-recursive", str(test_file)])
+        assert args.recursive is False
+    
+    def test_verbose_argument(self, tmp_path):
+        """Test --verbose argument."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("import os")
+        
+        args = self.parser.parse_args(["--check", "--verbose", str(test_file)])
+        assert args.verbose is True
+        
+        # Test short form
+        args = self.parser.parse_args(["--check", "-v", str(test_file)])
+        assert args.verbose is True
+    
+    def test_verbose_default(self, tmp_path):
+        """Test that verbose is False by default."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("import os")
+        
+        args = self.parser.parse_args(["--check", str(test_file)])
+        assert args.verbose is False
+    
+    def test_version_argument(self):
+        """Test --version argument."""
+        with pytest.raises(SystemExit) as excinfo:
+            self.parser.parse_args(["--version"])
+        
+        # argparse exits with code 0 for --version
+        assert excinfo.value.code == 0
+    
+    def test_help_argument(self):
+        """Test --help argument."""
+        with pytest.raises(SystemExit) as excinfo:
+            self.parser.parse_args(["--help"])
+        
+        # argparse exits with code 0 for --help
+        assert excinfo.value.code == 0
+    
+    def test_directory_target(self, tmp_path):
+        """Test parsing with directory target."""
+        args = self.parser.parse_args(["--check", str(tmp_path)])
+        
+        assert args.check is True
+        assert args.target == tmp_path
+        assert args.recursive is True
+    
+    def test_all_arguments_together(self, tmp_path):
+        """Test parsing with all optional arguments."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("import os")
+        
+        args = self.parser.parse_args([
+            "--cleanup", 
+            "--no-recursive", 
+            "--verbose",
+            str(test_file)
+        ])
+        
+        assert args.cleanup is True
+        assert args.check is False
+        assert args.recursive is False
+        assert args.verbose is True
+        assert args.target == test_file
+
+
+class TestMainFunction:
+    """Test cases for main function."""
+    
+    @patch('checker.ImportChecker')
+    def test_main_check_mode(self, mock_checker_class, tmp_path):
+        """Test main function in check mode."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("import os")
+        
+        mock_checker = MagicMock()
+        mock_checker_class.return_value = mock_checker
+        
+        with patch.object(sys, 'argv', ['checker.py', '--check', str(test_file)]):
+            result = main()
+        
+        assert result == 0
+        mock_checker_class.assert_called_once_with(check_mode=True, verbose=False)
+        mock_checker.run.assert_called_once_with(target_path=test_file, recursive=True)
+    
+    @patch('checker.ImportChecker')
+    def test_main_cleanup_mode(self, mock_checker_class, tmp_path):
+        """Test main function in cleanup mode."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("import os")
+        
+        mock_checker = MagicMock()
+        mock_checker_class.return_value = mock_checker
+        
+        with patch.object(sys, 'argv', ['checker.py', '--cleanup', str(test_file)]):
+            result = main()
+        
+        assert result == 0
+        mock_checker_class.assert_called_once_with(check_mode=False, verbose=False)
+        mock_checker.run.assert_called_once_with(target_path=test_file, recursive=True)
+    
+    @patch('checker.ImportChecker')
+    def test_main_verbose_mode(self, mock_checker_class, tmp_path):
+        """Test main function with verbose option."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("import os")
+        
+        mock_checker = MagicMock()
+        mock_checker_class.return_value = mock_checker
+        
+        with patch.object(sys, 'argv', ['checker.py', '--check', '--verbose', str(test_file)]):
+            result = main()
+        
+        assert result == 0
+        mock_checker_class.assert_called_once_with(check_mode=True, verbose=True)
+    
+    @patch('checker.ImportChecker')
+    def test_main_no_recursive(self, mock_checker_class, tmp_path):
+        """Test main function with no-recursive option."""
+        mock_checker = MagicMock()
+        mock_checker_class.return_value = mock_checker
+        
+        with patch.object(sys, 'argv', ['checker.py', '--check', '--no-recursive', str(tmp_path)]):
+            result = main()
+        
+        assert result == 0
+        mock_checker.run.assert_called_once_with(target_path=tmp_path, recursive=False)
+    
+    @patch('checker.ImportChecker')
+    @patch('builtins.print')
+    def test_main_with_import_checker_error(self, mock_print, mock_checker_class, tmp_path):
+        """Test main function handling ImportCheckerError."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("import os")
+        
+        mock_checker = MagicMock()
+        mock_checker.run.side_effect = ImportCheckerError("Test error")
+        mock_checker_class.return_value = mock_checker
+        
+        with patch.object(sys, 'argv', ['checker.py', '--check', str(test_file)]):
+            result = main()
+        
+        assert result == 1
+        mock_print.assert_called_with("Error: Test error", file=sys.stderr)
+    
+    @patch('checker.ImportChecker')
+    @patch('builtins.print')
+    def test_main_with_keyboard_interrupt(self, mock_print, mock_checker_class, tmp_path):
+        """Test main function handling KeyboardInterrupt."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("import os")
+        
+        mock_checker = MagicMock()
+        mock_checker.run.side_effect = KeyboardInterrupt()
+        mock_checker_class.return_value = mock_checker
+        
+        with patch.object(sys, 'argv', ['checker.py', '--check', str(test_file)]):
+            result = main()
+        
+        assert result == 1
+        mock_print.assert_called_with("\\nOperation cancelled by user", file=sys.stderr)
+    
+    @patch('checker.ImportChecker')
+    @patch('builtins.print')
+    def test_main_with_unexpected_error(self, mock_print, mock_checker_class, tmp_path):
+        """Test main function handling unexpected errors."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("import os")
+        
+        mock_checker = MagicMock()
+        mock_checker.run.side_effect = RuntimeError("Unexpected error")
+        mock_checker_class.return_value = mock_checker
+        
+        with patch.object(sys, 'argv', ['checker.py', '--check', str(test_file)]):
+            result = main()
+        
+        assert result == 1
+        mock_print.assert_called_with("Unexpected error: Unexpected error", file=sys.stderr)
+    
+    def test_main_with_invalid_arguments(self):
+        """Test main function with invalid arguments."""
+        with patch.object(sys, 'argv', ['checker.py', '--invalid']):
+            with pytest.raises(SystemExit) as excinfo:
+                main()
+            
+            # argparse exits with code 2 for invalid arguments
+            assert excinfo.value.code == 2
+    
+    @patch('checker.ImportChecker')
+    @patch('builtins.print')
+    def test_main_prints_verbose_info(self, mock_print, mock_checker_class, tmp_path):
+        """Test main function prints verbose information."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("import os")
+        
+        mock_checker = MagicMock()
+        mock_checker_class.return_value = mock_checker
+        
+        with patch.object(sys, 'argv', ['checker.py', '--check', '--verbose', str(test_file)]):
+            result = main()
+        
+        assert result == 0
+        
+        # Check that verbose information was printed
+        print_calls = [call[0][0] for call in mock_print.call_args_list]
+        verbose_info_printed = any("Running in check mode" in call for call in print_calls)
+        assert verbose_info_printed

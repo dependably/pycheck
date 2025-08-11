@@ -7,8 +7,8 @@ name = "python-library-checker"
 version = "1.0.0"
 description = "A tool to analyze Python files for unused imports and optionally clean them up"
 readme = "readme.md"
-requires-python = ">=3.7"
-license = {text = "MIT"}
+requires-python = ">=3.9"
+license = "MIT"
 authors = [
     {name = "Python Library Checker Project"}
 ]
@@ -16,15 +16,13 @@ keywords = ["python", "imports", "static-analysis", "code-quality", "linting"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Software Development :: Quality Assurance",
     "Topic :: Utilities",
@@ -59,7 +57,7 @@ checker = ["py.typed"]
 # Black configuration
 [tool.black]
 line-length = 120
-target-version = ['py37']
+target-version = ['py39']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -76,7 +74,7 @@ extend-exclude = '''
 
 # MyPy configuration
 [tool.mypy]
-python_version = "3.7"
+python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

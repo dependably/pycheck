@@ -1,5 +1,5 @@
 # Include important project files
-include README.md
+include readme.md
 include CLAUDE.md
 include requirements.txt
 include requirements-dev.txt
