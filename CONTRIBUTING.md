@@ -61,11 +61,13 @@ We use several tools to maintain code quality:
 - **MyPy**: Type checking (`mypy src/`)
 - **Pytest**: Testing (`pytest tests/`)
 
-Install pre-commit hooks (optional but recommended):
+Install the repo's git hooks (recommended):
 ```bash
-pip install pre-commit
-pre-commit install
+make install-hooks            # or: ./scripts/install-hooks.sh
 ```
+This points git's `core.hooksPath` at the tracked `.githooks/` directory. On
+each commit the hook dogfoods the config validators (`checker.py --validate .`),
+runs `black --check` and `flake8`, and a fast unit-test subset.
 
 ### Code Style Requirements
 

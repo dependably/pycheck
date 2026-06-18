@@ -90,13 +90,27 @@ class TestSetupArgumentParser:
         assert args.cleanup is True
         assert args.target == test_file
     
+    def test_validate_mode_argument(self, tmp_path):
+        """Test --validate argument."""
+        args = self.parser.parse_args(["--validate", str(tmp_path)])
+
+        assert args.validate is True
+        assert args.check is False
+        assert args.cleanup is False
+        assert args.target == tmp_path
+
     def test_mutually_exclusive_modes(self, tmp_path):
         """Test that --check and --cleanup are mutually exclusive."""
         test_file = tmp_path / "test.py"
         test_file.write_text("import os")
-        
+
         with pytest.raises(SystemExit):
             self.parser.parse_args(["--check", "--cleanup", str(test_file)])
+
+    def test_validate_mutually_exclusive(self, tmp_path):
+        """Test that --validate is mutually exclusive with the other modes."""
+        with pytest.raises(SystemExit):
+            self.parser.parse_args(["--validate", "--check", str(tmp_path)])
     
     def test_missing_mode_argument(self, tmp_path):
         """Test that mode argument is required."""
@@ -220,6 +234,27 @@ class TestMainFunction:
         mock_checker_class.assert_called_once_with(check_mode=False, verbose=False)
         mock_checker.run.assert_called_once_with(target_path=test_file, recursive=True)
     
+    @patch('validators.runner.run_validators')
+    def test_main_validate_mode(self, mock_run_validators, tmp_path):
+        """Test main function dispatches to the validators and propagates exit code."""
+        mock_run_validators.return_value = 0
+
+        with patch.object(sys, 'argv', ['checker.py', '--validate', str(tmp_path)]):
+            result = main()
+
+        assert result == 0
+        mock_run_validators.assert_called_once_with(tmp_path, verbose=False)
+
+    @patch('validators.runner.run_validators')
+    def test_main_validate_propagates_failure(self, mock_run_validators, tmp_path):
+        """Test main returns the runner's non-zero exit code."""
+        mock_run_validators.return_value = 1
+
+        with patch.object(sys, 'argv', ['checker.py', '--validate', str(tmp_path)]):
+            result = main()
+
+        assert result == 1
+
     @patch('checker.ImportChecker')
     def test_main_verbose_mode(self, mock_checker_class, tmp_path):
         """Test main function with verbose option."""
@@ -279,7 +314,7 @@ class TestMainFunction:
             result = main()
         
         assert result == 1
-        mock_print.assert_called_with("\\nOperation cancelled by user", file=sys.stderr)
+        mock_print.assert_called_with("\nOperation cancelled by user", file=sys.stderr)
     
     @patch('checker.ImportChecker')
     @patch('builtins.print')

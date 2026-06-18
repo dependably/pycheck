@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "python-library-checker"
-version = "1.0.0"
+version = "1.1.0"
 description = "A tool to analyze Python files for unused imports and optionally clean them up"
 readme = "readme.md"
 requires-python = ">=3.9"
@@ -37,6 +37,9 @@ dev = [
     "black>=22.0.0",
     "flake8>=4.0.0",
     "mypy>=0.900",
+    # Lets the pyproject validator run on Python < 3.11 (stdlib tomllib is 3.11+).
+    # Dev-only: runtime dependencies stay empty.
+    "tomli>=2.0.0; python_version < '3.11'",
 ]
 
 [project.urls]
@@ -49,7 +52,7 @@ python-import-checker = "src.checker:main"
 import-checker = "src.checker:main"
 
 [tool.setuptools]
-packages = ["src"]
+packages = ["src", "src.validators"]
 
 [tool.setuptools.package-data]
 checker = ["py.typed"]
@@ -87,6 +90,14 @@ warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
 strict_equality = true
+
+# The validators package supports both the flat layout (tests put src/ on
+# sys.path, so sibling modules import as ``checker`` / ``validators.*``) and the
+# installed-wheel layout (``src.*``). It also imports the optional ``tomli``
+# backport on Python < 3.11. Don't flag those import shims as missing.
+[[tool.mypy.overrides]]
+module = ["checker", "validators.*", "tomli"]
+ignore_missing_imports = true
 
 # Pytest configuration
 [tool.pytest.ini_options]

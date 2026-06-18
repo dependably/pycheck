@@ -1,0 +1,5 @@
+--index-url http://insecure.example.com/simple
+--extra-index-url https://deployuser:PLANTED_FAKE_SECRET_do_not_scan@pypi.example.com/simple
+--trusted-host insecure.example.com
+requests>=2.0
+this is not a valid requirement !!!

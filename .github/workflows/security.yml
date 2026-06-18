@@ -56,6 +56,25 @@ jobs:
           semgrep-report.json
         retention-days: 30
 
+  secret-scan:
+    name: Secret Scanning (TruffleHog)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0          # full history so TruffleHog can diff commits
+
+    - name: TruffleHog secret scan
+      # Pinned by commit SHA (v3.95.6). --only-verified keeps fabricated test
+      # secrets in fixtures from tripping the scan.
+      uses: trufflesecurity/trufflehog@30d5bb91af1a771378349dbbb0c82129392acf70
+      with:
+        extra_args: --only-verified
+
   codeql:
     name: CodeQL Analysis
     runs-on: ubuntu-latest

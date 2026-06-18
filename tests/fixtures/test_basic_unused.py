@@ -5,8 +5,10 @@ This file contains various unused imports that should be detected and removed.
 """
 
 import os  # Used
+import sys  # Unused
+import json  # Unused
 import re  # Used
-from typing import List  # Only List is used, Dict and Set are unused
+from typing import List, Dict, Set  # Only List is used, Dict and Set are unused
 
 
 def process_data():

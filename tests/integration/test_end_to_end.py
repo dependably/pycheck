@@ -233,7 +233,7 @@ def check():
             tmp_path = Path(tmp_dir)
             
             # Create test files
-            (tmp_path / "root.py").write_text("import os\\nimport sys")
+            (tmp_path / "root.py").write_text("import os\nimport sys")
             
             # Create subdirectory with file
             subdir = tmp_path / "subdir"
@@ -360,7 +360,7 @@ def main(
             
             # Create valid file
             valid_file = tmp_path / "valid.py"
-            valid_file.write_text("import os\\ndef main(): return os.getcwd()")
+            valid_file.write_text("import os\ndef main(): return os.getcwd()")
             
             checker = ImportChecker(check_mode=True)
             

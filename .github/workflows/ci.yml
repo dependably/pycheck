@@ -43,7 +43,10 @@ jobs:
     - name: Run tests with coverage
       run: |
         python -m pytest tests/ -v --cov=src --cov-report=xml --cov-report=term-missing
-        
+
+    - name: Validate own config artifacts (dogfood)
+      run: python src/checker.py --validate .
+
     - name: Upload coverage reports to Codecov
       if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
       uses: codecov/codecov-action@v3

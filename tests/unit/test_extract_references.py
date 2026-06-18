@@ -217,8 +217,9 @@ except ValueError as e:
         assert "error_handler" in references
         assert "e" in references  # Exception variable used
         assert "default_value" in references
-        # result and fallback_result are stored
-        assert "result" not in references
+        # result is stored then loaded again in log.info(result), so it is referenced
+        assert "result" in references
+        # fallback_result is only assigned, never loaded
         assert "fallback_result" not in references
     
     def test_extract_with_context_manager(self):

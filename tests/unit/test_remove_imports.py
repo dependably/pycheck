@@ -432,12 +432,12 @@ def main():
     
     def test_remove_with_windows_line_endings(self):
         """Test removal preserves Windows line endings."""
-        content = "import os\\r\\nimport sys\\r\\n\\r\\ndef main():\\r\\n    return os.getcwd()\\r\\n"
+        content = "import os\r\nimport sys\r\n\r\ndef main():\r\n    return os.getcwd()\r\n"
         unused_imports = [
             ImportInfo("sys", [], line_number=2)
         ]
-        
+
         result = self.checker.remove_unused_imports(content, unused_imports)
-        
-        expected = "import os\\r\\n\\r\\ndef main():\\r\\n    return os.getcwd()\\r\\n"
+
+        expected = "import os\r\n\r\ndef main():\r\n    return os.getcwd()\r\n"
         assert result == expected

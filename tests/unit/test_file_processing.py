@@ -157,7 +157,7 @@ def main(
         
         # Write binary data that will cause UnicodeDecodeError
         with open(test_file, 'wb') as f:
-            f.write(b"import os\\n# \\xff\\xfe invalid utf-8\\ndef main(): pass")
+            f.write(b"import os\n# \xff\xfe invalid utf-8\ndef main(): pass")
         
         # Should fallback to latin-1 encoding and process successfully
         with patch('builtins.print'):
@@ -209,8 +209,8 @@ class TestDirectoryProcessing:
     def test_process_directory_basic(self, tmp_path):
         """Test processing a directory with Python files."""
         # Create test files
-        (tmp_path / "file1.py").write_text("import os\\ndef main(): return os.getcwd()")
-        (tmp_path / "file2.py").write_text("import sys\\ndef main(): return sys.version")
+        (tmp_path / "file1.py").write_text("import os\ndef main(): return os.getcwd()")
+        (tmp_path / "file2.py").write_text("import sys\ndef main(): return sys.version")
         (tmp_path / "not_python.txt").write_text("Not Python")
         
         with patch('builtins.print'):
@@ -298,7 +298,7 @@ class TestRunMethod:
     def test_run_with_file(self, tmp_path):
         """Test run method with file target."""
         test_file = tmp_path / "test.py"
-        test_file.write_text("import os\\nimport sys\\ndef main(): return os.getcwd()")
+        test_file.write_text("import os\nimport sys\ndef main(): return os.getcwd()")
         
         with patch('builtins.print') as mock_print:
             self.checker.run(test_file)
@@ -331,7 +331,7 @@ class TestRunMethod:
         self.checker = ImportChecker(check_mode=False)
         
         test_file = tmp_path / "test.py"
-        test_file.write_text("import os\\nimport sys\\ndef main(): return os.getcwd()")
+        test_file.write_text("import os\nimport sys\ndef main(): return os.getcwd()")
         
         with patch('builtins.print') as mock_print:
             self.checker.run(test_file)

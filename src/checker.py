@@ -218,65 +218,62 @@ class ImportChecker:
         
         # Process from-import lines that need partial removal
         for line_number, unused_from_line in unused_by_line.items():
-            line_idx = line_number - 1  # Convert to 0-based
-            
-            if 0 <= line_idx < len(lines):
-                original_line = lines[line_idx]
-                
-                # Get all imports from this line (both used and unused)
-                all_names = unused_from_line[0].all_names_on_line
-                all_aliases = unused_from_line[0].all_aliases_on_line
-                
-                # Determine which names to keep (not in unused list)
-                unused_names = set()
-                for unused_import in unused_from_line:
-                    unused_names.add(unused_import.names[0])
-                
-                # Filter out unused names
-                remaining_names = []
-                for i, name in enumerate(all_names):
-                    if name not in unused_names:
-                        alias = all_aliases[i]
-                        if alias:
-                            remaining_names.append(f"{name} as {alias}")
-                        else:
-                            remaining_names.append(name)
-                
-                if remaining_names:
-                    # Reconstruct the import line with remaining names
-                    module_name = unused_from_line[0].module
-                    new_import_line = f"from {module_name} import {', '.join(remaining_names)}"
-                    
-                    # Preserve indentation and comments
-                    original_stripped = original_line.lstrip()
-                    indent = original_line[:len(original_line) - len(original_stripped)]
-                    
-                    # Check for inline comments
-                    comment = ""
-                    if '#' in original_line:
-                        comment_start = original_line.find('#')
-                        comment = original_line[comment_start:]
-                    
-                    lines[line_idx] = f"{indent}{new_import_line}  {comment}\n" if comment else f"{indent}{new_import_line}\n"
+            start_idx = line_number - 1  # Convert to 0-based
+
+            if not (0 <= start_idx < len(lines)):
+                continue
+
+            # A from-import may span several physical lines (parenthesized or
+            # backslash-continued). Find the full extent of the statement.
+            end_idx = self._find_statement_span(lines, start_idx)
+            original_line = lines[start_idx]
+
+            # Get all imports from this statement (both used and unused)
+            all_names = unused_from_line[0].all_names_on_line
+            all_aliases = unused_from_line[0].all_aliases_on_line
+
+            # Determine which names are unused
+            unused_names = {imp.names[0] for imp in unused_from_line}
+
+            # Keep the names that are still used, preserving aliases
+            remaining_names = []
+            for i, name in enumerate(all_names):
+                if name not in unused_names:
+                    alias = all_aliases[i]
+                    remaining_names.append(f"{name} as {alias}" if alias else name)
+
+            # Drop every continuation line; the statement is rewritten on its
+            # first line (or removed entirely if nothing remains).
+            for idx in range(start_idx + 1, end_idx + 1):
+                lines_to_remove.add(idx)
+
+            if remaining_names:
+                # Reconstruct the import statement with the remaining names
+                module_name = unused_from_line[0].module
+                new_import_line = f"from {module_name} import {', '.join(remaining_names)}"
+
+                # Preserve indentation and the original line ending
+                indent = original_line[:len(original_line) - len(original_line.lstrip())]
+                newline = "\r\n" if original_line.endswith("\r\n") else "\n"
+
+                # Preserve an inline comment only for single-line statements
+                comment = ""
+                if end_idx == start_idx and '#' in original_line:
+                    comment = original_line[original_line.find('#'):].rstrip("\r\n")
+
+                if comment:
+                    lines[start_idx] = f"{indent}{new_import_line}  {comment}{newline}"
                 else:
-                    # All names were unused, remove entire line
-                    lines_to_remove.add(line_idx)
-        
-        # Remove lines marked for complete removal
-        filtered_lines = []
-        for i, line in enumerate(lines):
-            if i not in lines_to_remove:
-                filtered_lines.append(line)
+                    lines[start_idx] = f"{indent}{new_import_line}{newline}"
             else:
-                # Check if we should preserve blank lines for readability
-                if (i + 1 < len(lines) and 
-                    lines[i + 1].strip() == '' and 
-                    filtered_lines and 
-                    filtered_lines[-1].strip() != ''):
-                    # Skip the import but keep a blank line if it helps readability
-                    if not (i + 2 < len(lines) and lines[i + 2].strip() == ''):
-                        filtered_lines.append('\n')
-        
+                # All names were unused, remove the entire statement
+                lines_to_remove.add(start_idx)
+
+        # Remove lines marked for complete removal
+        filtered_lines = [
+            line for i, line in enumerate(lines) if i not in lines_to_remove
+        ]
+
         # Clean up excessive blank lines (more than 2 consecutive)
         result_lines = []
         blank_count = 0
@@ -291,7 +288,33 @@ class ImportChecker:
                 result_lines.append(line)
         
         return ''.join(result_lines)
-    
+
+    def _find_statement_span(self, lines: List[str], start_idx: int) -> int:
+        """
+        Find the index of the last physical line of an import statement that
+        begins at ``start_idx``.
+
+        Handles parenthesized (``from x import (a, b)``) and backslash-continued
+        statements that span multiple physical lines.
+
+        Args:
+            lines: List of file lines
+            start_idx: Index of the statement's first line
+
+        Returns:
+            Index of the statement's final line
+        """
+        depth = 0
+        idx = start_idx
+        while idx < len(lines):
+            code = lines[idx].split('#', 1)[0]
+            depth += code.count('(') - code.count(')')
+            continues = code.rstrip().endswith('\\')
+            if depth <= 0 and not continues:
+                return idx
+            idx += 1
+        return len(lines) - 1
+
     def _is_complete_import_statement(self, lines: List[str], line_idx: int) -> bool:
         """
         Check if an import statement is complete at the given line.
@@ -565,6 +588,7 @@ Examples:
   %(prog)s --check src/                         # Analyze directory recursively
   %(prog)s --cleanup --no-recursive src/       # Clean directory non-recursively
   %(prog)s --cleanup myfile.py --verbose       # Clean file with verbose output
+  %(prog)s --validate .                        # Validate config artifacts in this directory
         """
     )
     
@@ -579,6 +603,11 @@ Examples:
         "--cleanup",
         action="store_true",
         help="Remove unused imports from files (modifies files)"
+    )
+    mode_group.add_argument(
+        "--validate",
+        action="store_true",
+        help="Validate committed config artifacts (pyproject.toml, pip.conf, requirements.txt)"
     )
     
     # Target path (required)
@@ -609,7 +638,7 @@ Examples:
     parser.add_argument(
         "--version",
         action="version",
-        version="python-import-checker 1.0.0"
+        version="python-import-checker 1.1.0"
     )
     
     return parser
@@ -627,14 +656,27 @@ def main() -> int:
         parser = setup_argument_parser()
         args = parser.parse_args()
         
+        # Validation mode is dispatched to the validators package and returns
+        # early; the AST import-checker path below is untouched.
+        if args.validate:
+            # Lazy import so the import-checker fast path stays stdlib-only.
+            try:
+                from validators.runner import run_validators
+            except ImportError:  # installed wheel (src.validators)
+                from .validators.runner import run_validators
+            if args.verbose:
+                print(f"Validating config artifacts under: {args.target}")
+            exit_code: int = run_validators(args.target, verbose=args.verbose)
+            return exit_code
+
         # Determine mode
         check_mode = args.check
-        
+
         if args.verbose:
             mode_str = "check" if check_mode else "cleanup"
             print(f"Running in {mode_str} mode on: {args.target}")
             print(f"Recursive: {args.recursive}")
-        
+
         # Create and run checker
         checker = ImportChecker(
             check_mode=check_mode,

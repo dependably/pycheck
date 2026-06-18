@@ -4,6 +4,12 @@ Test file where all imports are unused.
 This file should have all import statements removed when cleaned up.
 """
 
+import os  # Unused
+import sys  # Unused
+import json  # Unused
+from typing import Dict, List  # Unused
+from collections import Counter  # Unused
+
 
 def main():
     """Function that doesn't use any imports."""

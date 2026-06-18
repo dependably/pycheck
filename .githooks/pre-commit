@@ -1,0 +1,30 @@
+#!/bin/sh
+# Pre-commit hook for checker-python.
+#
+# Dogfoods the config validators on this repo's own artifacts, then runs the
+# code-quality gates on the *staged* Python files. Install with:
+#   make install-hooks      (or ./scripts/install-hooks.sh)
+# which points git's core.hooksPath at .githooks/.
+set -e
+
+ROOT="$(git rev-parse --show-toplevel)"
+PY="${PYTHON:-python3}"
+
+echo "[pre-commit] Validating committed config artifacts (dogfood)..."
+"$PY" "$ROOT/src/checker.py" --validate "$ROOT"
+
+# Lint only the staged Python files so the hook doesn't choke on unrelated
+# files and stays fast.
+STAGED_PY=$(git diff --cached --name-only --diff-filter=ACM | grep '\.py$' || true)
+if [ -n "$STAGED_PY" ]; then
+    echo "[pre-commit] black --check (staged files)..."
+    echo "$STAGED_PY" | xargs "$PY" -m black --check
+
+    echo "[pre-commit] flake8 (staged files)..."
+    echo "$STAGED_PY" | xargs "$PY" -m flake8 --max-line-length=120
+fi
+
+echo "[pre-commit] fast unit tests (advisory)..."
+"$PY" -m pytest "$ROOT/tests/unit" -q || echo "[pre-commit] WARN: unit tests failed (advisory, not blocking)"
+
+echo "[pre-commit] checks complete."
