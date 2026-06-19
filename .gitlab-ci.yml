@@ -203,14 +203,11 @@ sbom-publish:
     - job: sbom
       artifacts: true
   resource_group: sbom-publish
+  # Default branch only, and only when Dependency-Track is configured — absent
+  # the DT variables the job is simply not added to the pipeline (no red).
   rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $dependencyTrack_url && $dependencyTrack_token'
   script:
-    - |
-      if [ -z "$dependencyTrack_url" ] || [ -z "$dependencyTrack_token" ]; then
-        echo "ERROR: dependencyTrack_url and dependencyTrack_token must be set as CI/CD variables." >&2
-        exit 1
-      fi
     - apt-get update && apt-get install --yes --no-install-recommends curl
     - |
       set -eu
