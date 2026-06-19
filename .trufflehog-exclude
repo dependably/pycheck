@@ -1,6 +1,9 @@
 # Paths excluded from the full-history TruffleHog sweep (secret-scan-deep).
 # Regexes matched against repository paths, one per line.
 #
-# tests/fixtures hold intentional, obviously-fake "planted" secrets
-# (e.g. PLANTED_FAKE_SECRET_do_not_scan) used as validator test data.
-^tests/fixtures/
+# All test code legitimately embeds obviously-fake credentials and insecure
+# index URLs (userinfo-in-URL form) as validator input data: tests/fixtures
+# hold planted secrets, and the unit tests inline fake creds to exercise the
+# detectors. src/ is still fully scanned, and the verified-only `secret-scan`
+# job still covers tests/.
+^tests/
