@@ -166,37 +166,28 @@ class ImportChecker:
         Returns:
             Tuple of (used_imports, unused_imports)
         """
-        used_imports = []
-        unused_imports = []
+        used_imports: List[ImportInfo] = []
+        unused_imports: List[ImportInfo] = []
 
         for import_info in imports:
-            is_used = False
-
-            if import_info.is_from_import:
-                # For 'from module import name' statements
-                for name in import_info.names:
-                    # Check if the imported name (or its alias) is referenced
-                    check_name = import_info.alias if import_info.alias else name
-                    if check_name in references:
-                        is_used = True
-                        break
-            else:
-                # For 'import module' statements
-                check_name = import_info.alias if import_info.alias else import_info.module
-                # For module imports, also check for dotted access
-                module_base = check_name.split(".")[0]
-                if module_base in references or check_name in references:
-                    is_used = True
-
-            import_info.used = is_used
-            if is_used:
-                used_imports.append(import_info)
-            else:
-                unused_imports.append(import_info)
+            import_info.used = self._import_is_used(import_info, references)
+            (used_imports if import_info.used else unused_imports).append(import_info)
 
         return used_imports, unused_imports
 
-    def remove_unused_imports(self, content: str, unused_imports: List[ImportInfo]) -> str:  # noqa: C901
+    @staticmethod
+    def _import_is_used(import_info: ImportInfo, references: Set[str]) -> bool:
+        """Return True if an import (or its alias) is referenced in the code."""
+        if import_info.is_from_import:
+            # 'from module import name' — any imported name (or its alias) used.
+            return any((import_info.alias or name) in references for name in import_info.names)
+
+        # 'import module' — match the alias/module, including dotted access.
+        check_name = import_info.alias if import_info.alias else import_info.module
+        module_base = check_name.split(".")[0]
+        return module_base in references or check_name in references
+
+    def remove_unused_imports(self, content: str, unused_imports: List[ImportInfo]) -> str:
         """
         Remove unused import lines from file content while preserving formatting.
         Handles partial removal for multi-name imports.
@@ -212,82 +203,91 @@ class ImportChecker:
             return content
 
         lines = content.splitlines(keepends=True)
+        unused_by_line, lines_to_remove = self._partition_unused(unused_imports)
 
-        # Group unused imports by line number for from-imports
-        unused_by_line: Dict[int, List[ImportInfo]] = {}
-        lines_to_remove = set()
-
-        for import_info in unused_imports:
-            line_number = import_info.line_number
-
-            if import_info.is_from_import:
-                if line_number not in unused_by_line:
-                    unused_by_line[line_number] = []
-                unused_by_line[line_number].append(import_info)
-            else:
-                # For regular imports, mark entire line for removal
-                lines_to_remove.add(line_number - 1)  # Convert to 0-based
-
-        # Process from-import lines that need partial removal
+        # Rewrite each from-import statement that needs partial removal.
         for line_number, unused_from_line in unused_by_line.items():
-            start_idx = line_number - 1  # Convert to 0-based
+            self._rewrite_from_import(lines, line_number, unused_from_line, lines_to_remove)
 
-            if not (0 <= start_idx < len(lines)):
-                continue
-
-            # A from-import may span several physical lines (parenthesized or
-            # backslash-continued). Find the full extent of the statement.
-            end_idx = self._find_statement_span(lines, start_idx)
-            original_line = lines[start_idx]
-
-            # Get all imports from this statement (both used and unused)
-            all_names = unused_from_line[0].all_names_on_line
-            all_aliases = unused_from_line[0].all_aliases_on_line
-
-            # Determine which names are unused
-            unused_names = {imp.names[0] for imp in unused_from_line}
-
-            # Keep the names that are still used, preserving aliases
-            remaining_names = []
-            for i, name in enumerate(all_names):
-                if name not in unused_names:
-                    alias = all_aliases[i]
-                    remaining_names.append(f"{name} as {alias}" if alias else name)
-
-            # Drop every continuation line; the statement is rewritten on its
-            # first line (or removed entirely if nothing remains).
-            for idx in range(start_idx + 1, end_idx + 1):
-                lines_to_remove.add(idx)
-
-            if remaining_names:
-                # Reconstruct the import statement with the remaining names
-                module_name = unused_from_line[0].module
-                new_import_line = f"from {module_name} import {', '.join(remaining_names)}"
-
-                # Preserve indentation and the original line ending
-                indent = original_line[: len(original_line) - len(original_line.lstrip())]
-                newline = "\r\n" if original_line.endswith("\r\n") else "\n"
-
-                # Preserve an inline comment only for single-line statements
-                comment = ""
-                if end_idx == start_idx and "#" in original_line:
-                    comment = original_line[original_line.find("#") :].rstrip("\r\n")
-
-                if comment:
-                    lines[start_idx] = f"{indent}{new_import_line}  {comment}{newline}"
-                else:
-                    lines[start_idx] = f"{indent}{new_import_line}{newline}"
-            else:
-                # All names were unused, remove the entire statement
-                lines_to_remove.add(start_idx)
-
-        # Remove lines marked for complete removal
         filtered_lines = [line for i, line in enumerate(lines) if i not in lines_to_remove]
+        return self._collapse_blank_lines(filtered_lines)
 
-        # Clean up excessive blank lines (more than 2 consecutive)
-        result_lines = []
+    @staticmethod
+    def _partition_unused(
+        unused_imports: List[ImportInfo],
+    ) -> Tuple[Dict[int, List[ImportInfo]], Set[int]]:
+        """Split unused imports into per-line from-imports and whole lines to drop.
+
+        Returns (from-imports grouped by 1-based line number, 0-based line
+        indices to remove outright for plain ``import module`` statements).
+        """
+        unused_by_line: Dict[int, List[ImportInfo]] = {}
+        lines_to_remove: Set[int] = set()
+        for import_info in unused_imports:
+            if import_info.is_from_import:
+                unused_by_line.setdefault(import_info.line_number, []).append(import_info)
+            else:
+                lines_to_remove.add(import_info.line_number - 1)  # 0-based
+        return unused_by_line, lines_to_remove
+
+    def _rewrite_from_import(
+        self,
+        lines: List[str],
+        line_number: int,
+        unused_from_line: List[ImportInfo],
+        lines_to_remove: Set[int],
+    ) -> None:
+        """Rewrite a single from-import statement in place, dropping unused names.
+
+        A from-import may span several physical lines (parenthesized or
+        backslash-continued); continuation lines are removed and the statement is
+        rewritten on its first line, or removed entirely if nothing remains.
+        """
+        start_idx = line_number - 1  # 0-based
+        if not (0 <= start_idx < len(lines)):
+            return
+
+        end_idx = self._find_statement_span(lines, start_idx)
+        original_line = lines[start_idx]
+        all_names = unused_from_line[0].all_names_on_line
+        all_aliases = unused_from_line[0].all_aliases_on_line
+        unused_names = {imp.names[0] for imp in unused_from_line}
+
+        remaining_names = [
+            f"{name} as {all_aliases[i]}" if all_aliases[i] else name
+            for i, name in enumerate(all_names)
+            if name not in unused_names
+        ]
+
+        # Drop every continuation line of the statement.
+        for idx in range(start_idx + 1, end_idx + 1):
+            lines_to_remove.add(idx)
+
+        if not remaining_names:
+            # All names were unused — remove the entire statement.
+            lines_to_remove.add(start_idx)
+            return
+
+        module_name = unused_from_line[0].module
+        new_import_line = f"from {module_name} import {', '.join(remaining_names)}"
+        indent = original_line[: len(original_line) - len(original_line.lstrip())]
+        newline = "\r\n" if original_line.endswith("\r\n") else "\n"
+
+        # Preserve an inline comment only for single-line statements.
+        comment = ""
+        if end_idx == start_idx and "#" in original_line:
+            comment = original_line[original_line.find("#") :].rstrip("\r\n")
+
+        if comment:
+            lines[start_idx] = f"{indent}{new_import_line}  {comment}{newline}"
+        else:
+            lines[start_idx] = f"{indent}{new_import_line}{newline}"
+
+    @staticmethod
+    def _collapse_blank_lines(filtered_lines: List[str]) -> str:
+        """Join lines, collapsing runs of more than 2 consecutive blank lines."""
+        result_lines: List[str] = []
         blank_count = 0
-
         for line in filtered_lines:
             if line.strip() == "":
                 blank_count += 1
@@ -296,7 +296,6 @@ class ImportChecker:
             else:
                 blank_count = 0
                 result_lines.append(line)
-
         return "".join(result_lines)
 
     def _find_statement_span(self, lines: List[str], start_idx: int) -> int:
@@ -358,7 +357,71 @@ class ImportChecker:
 
         return True
 
-    def process_file(self, file_path: Path) -> None:  # noqa: C901
+    @staticmethod
+    def _format_import(import_info: ImportInfo) -> str:
+        """Render an ImportInfo back to its source-like statement string."""
+        if import_info.is_from_import:
+            import_str = f"from {import_info.module} import {', '.join(import_info.names)}"
+        else:
+            import_str = f"import {import_info.module}"
+        if import_info.alias:
+            import_str += f" as {import_info.alias}"
+        return import_str
+
+    def _read_and_parse(self, file_path: Path) -> Tuple[str, ast.AST]:
+        """Read a file (UTF-8 with latin-1 fallback) and parse it into an AST."""
+        try:
+            with open(file_path, "r", encoding="utf-8") as file:
+                content = file.read()
+            tree = ast.parse(content, filename=str(file_path))
+        except UnicodeDecodeError:
+            # Retry with a permissive encoding if UTF-8 fails.
+            with open(file_path, "r", encoding="latin-1") as file:
+                content = file.read()
+            tree = ast.parse(content, filename=str(file_path))
+        except SyntaxError as e:
+            raise ImportCheckerError(f"Syntax error in {file_path}: {e}")
+        return content, tree
+
+    def _report_check(self, file_path: Path, used_imports: List[ImportInfo], unused_imports: List[ImportInfo]) -> None:
+        """Print read-only analysis results for one file."""
+        print(f"Analyzing: {file_path}")
+        if unused_imports:
+            print(f"  Found {len(unused_imports)} unused import(s):")
+            for import_info in unused_imports:
+                print(f"    Line {import_info.line_number}: {self._format_import(import_info)}")
+        else:
+            print("  No unused imports found")
+
+        if self.verbose:
+            print(f"  Used imports: {len(used_imports)}")
+            for import_info in used_imports:
+                print(f"    Line {import_info.line_number}: {self._format_import(import_info)}")
+
+    def _report_cleanup(self, file_path: Path, content: str, unused_imports: List[ImportInfo]) -> None:
+        """Remove unused imports from a file (with backup) and print results."""
+        print(f"Cleaning: {file_path}")
+        if not unused_imports:
+            print("  No unused imports to remove")
+            return
+
+        print(f"  Removing {len(unused_imports)} unused import(s)")
+
+        # Create a backup before modifying.
+        backup_path = file_path.with_suffix(file_path.suffix + ".backup")
+        self.log_verbose(f"Creating backup: {backup_path}")
+        shutil.copy2(file_path, backup_path)
+
+        modified_content = self.remove_unused_imports(content, unused_imports)
+        with open(file_path, "w", encoding="utf-8") as file:
+            file.write(modified_content)
+
+        print("  Removed imports:")
+        for import_info in unused_imports:
+            print(f"    Line {import_info.line_number}: {self._format_import(import_info)}")
+        print(f"  Backup saved as: {backup_path}")
+
+    def process_file(self, file_path: Path) -> None:
         """
         Process a single Python file for import analysis.
 
@@ -383,100 +446,21 @@ class ImportChecker:
                 self.log_verbose(f"Skipping non-Python file: {file_path}")
                 return
 
-            # Read and parse the file
-            try:
-                with open(file_path, "r", encoding="utf-8") as file:
-                    content = file.read()
+            content, tree = self._read_and_parse(file_path)
 
-                # Parse the AST
-                tree = ast.parse(content, filename=str(file_path))
-
-            except UnicodeDecodeError:
-                # Try with different encoding if UTF-8 fails
-                with open(file_path, "r", encoding="latin-1") as file:
-                    content = file.read()
-                tree = ast.parse(content, filename=str(file_path))
-
-            except SyntaxError as e:
-                raise ImportCheckerError(f"Syntax error in {file_path}: {e}")
-
-            # Extract imports and name references
             imports = self.extract_imports_from_ast(tree)
             references = self.extract_name_references(tree)
-
             self.log_verbose(f"Found {len(imports)} imports and {len(references)} name references")
 
-            # Analyze imports
             used_imports, unused_imports = self.analyze_imports(imports, references)
 
             self.processed_files += 1
-            file_issues = len(unused_imports)
-            self.total_issues += file_issues
+            self.total_issues += len(unused_imports)
 
             if self.check_mode:
-                print(f"Analyzing: {file_path}")
-
-                if unused_imports:
-                    print(f"  Found {file_issues} unused import(s):")
-                    for import_info in unused_imports:
-                        if import_info.is_from_import:
-                            import_str = f"from {import_info.module} import {', '.join(import_info.names)}"
-                        else:
-                            import_str = f"import {import_info.module}"
-
-                        if import_info.alias:
-                            import_str += f" as {import_info.alias}"
-
-                        print(f"    Line {import_info.line_number}: {import_str}")
-                else:
-                    print("  No unused imports found")
-
-                if self.verbose:
-                    print(f"  Used imports: {len(used_imports)}")
-                    for import_info in used_imports:
-                        if import_info.is_from_import:
-                            import_str = f"from {import_info.module} import {', '.join(import_info.names)}"
-                        else:
-                            import_str = f"import {import_info.module}"
-
-                        if import_info.alias:
-                            import_str += f" as {import_info.alias}"
-
-                        print(f"    Line {import_info.line_number}: {import_str}")
+                self._report_check(file_path, used_imports, unused_imports)
             else:
-                print(f"Cleaning: {file_path}")
-
-                if unused_imports:
-                    print(f"  Removing {file_issues} unused import(s)")
-
-                    # Create backup before modifying
-                    backup_path = file_path.with_suffix(file_path.suffix + ".backup")
-                    self.log_verbose(f"Creating backup: {backup_path}")
-
-                    shutil.copy2(file_path, backup_path)
-
-                    # Remove unused imports and rewrite file
-                    modified_content = self.remove_unused_imports(content, unused_imports)
-
-                    # Write the modified content back to the file
-                    with open(file_path, "w", encoding="utf-8") as file:
-                        file.write(modified_content)
-
-                    print("  Removed imports:")
-                    for import_info in unused_imports:
-                        if import_info.is_from_import:
-                            import_str = f"from {import_info.module} import {', '.join(import_info.names)}"
-                        else:
-                            import_str = f"import {import_info.module}"
-
-                        if import_info.alias:
-                            import_str += f" as {import_info.alias}"
-
-                        print(f"    Line {import_info.line_number}: {import_str}")
-
-                    print(f"  Backup saved as: {backup_path}")
-                else:
-                    print("  No unused imports to remove")
+                self._report_cleanup(file_path, content, unused_imports)
 
         except PermissionError as e:
             raise ImportCheckerError(f"Permission denied accessing file {file_path}: {e}")
@@ -654,7 +638,7 @@ def main() -> int:
                 from .validators.runner import run_validators
             if args.verbose:
                 print(f"Validating config artifacts under: {args.target}")
-            exit_code: int = run_validators(args.target, verbose=args.verbose)
+            exit_code: int = run_validators(args.target)
             return exit_code
 
         # Determine mode

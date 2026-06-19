@@ -43,7 +43,7 @@ def discover_config_files(target: Path) -> List[Tuple[Path, _Validator]]:
     return found
 
 
-def run_validators(target: Path, *, verbose: bool = False) -> int:
+def run_validators(target: Path) -> int:
     """Validate every discovered artifact and print a report. Returns exit code."""
     target = Path(target)
     files = discover_config_files(target)
@@ -67,13 +67,13 @@ def run_validators(target: Path, *, verbose: bool = False) -> int:
         result = validator(content)
         total_errors += len(result.errors)
         total_warnings += len(result.warnings)
-        _print_result(path, result, verbose=verbose)
+        _print_result(path, result)
 
-    print(f"\nValidation complete: {len(files)} file(s), " f"{total_errors} error(s), {total_warnings} warning(s)")
+    print(f"\nValidation complete: {len(files)} file(s), {total_errors} error(s), {total_warnings} warning(s)")
     return 1 if total_errors else 0
 
 
-def _print_result(path: Path, result: ValidationResult, *, verbose: bool) -> None:
+def _print_result(path: Path, result: ValidationResult) -> None:
     if result.info.get("skipped"):
         print(f"Skipped: {path} ({result.info.get('reason', 'validation unavailable')})")
         return

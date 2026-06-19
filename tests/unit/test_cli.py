@@ -238,7 +238,7 @@ class TestMainFunction:
             result = main()
 
         assert result == 0
-        mock_run_validators.assert_called_once_with(tmp_path, verbose=False)
+        mock_run_validators.assert_called_once_with(tmp_path)
 
     @patch("validators.runner.run_validators")
     def test_main_validate_propagates_failure(self, mock_run_validators, tmp_path):
