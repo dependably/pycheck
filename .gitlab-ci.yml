@@ -44,8 +44,10 @@ stages:
 # $REGISTRY_URL/simple/, HTTP Basic auth, login "ci"). Mirrors the
 # dependably-community pipeline's REGISTRY_URL/REGISTRY_KEY wiring and HARD-FAILS
 # when either is empty rather than silently falling back to public PyPI.
-# Credentials go in ~/.netrc so the token never appears in pip's index-url output.
-# Set REGISTRY_URL + REGISTRY_KEY as UNPROTECTED, masked CI/CD variables so
+# Credentials are embedded in the index-url so pip carries them through to the
+# package-download URLs on the same host (netrc alone was not applied to the
+# /packages/ fetch -> HTTP 403). GitLab masks REGISTRY_KEY in job logs. Set
+# REGISTRY_URL + REGISTRY_KEY as UNPROTECTED, masked CI/CD variables so
 # merge-request pipelines (unprotected branches) can install too.
 .registry_setup: &registry_setup |
   if [ -z "${REGISTRY_URL:-}" ] || [ -z "${REGISTRY_KEY:-}" ]; then
@@ -54,9 +56,7 @@ stages:
   fi
   REGISTRY_HOST=$(printf '%s' "$REGISTRY_URL" | sed -E 's#^https?://##; s#/.*##')
   mkdir -p "$HOME/.config/pip"
-  printf '[global]\nindex-url = https://%s/simple/\n' "$REGISTRY_HOST" > "$HOME/.config/pip/pip.conf"
-  printf 'machine %s login ci password %s\n' "$REGISTRY_HOST" "$REGISTRY_KEY" > "$HOME/.netrc"
-  chmod 600 "$HOME/.netrc"
+  printf '[global]\nindex-url = https://ci:%s@%s/simple/\n' "$REGISTRY_KEY" "$REGISTRY_HOST" > "$HOME/.config/pip/pip.conf"
 
 # Reusable editable-install + pip cache (keyed on the project metadata).
 .dev_install: &dev_install
