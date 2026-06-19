@@ -180,20 +180,25 @@ build:
       - dist/*
     expire_in: 1 week
 
-# Software Bill of Materials (CycloneDX, spec 1.6). Generated on every pipeline
-# from the installed environment so the build's whole supply chain is captured
-# (the prod-only tree is empty — zero runtime deps). cyclonedx-bom is pinned.
+# Software Bill of Materials (CycloneDX, spec 1.6). The SBOM must describe what
+# *this project* ships, so it is generated from a clean virtualenv containing
+# ONLY python-check's runtime dependencies (zero third-party deps — stdlib only).
+# The generator (cyclonedx-bom) is installed in the job's base environment and
+# kept OUT of the scanned venv; otherwise its own dependency tree (e.g. lxml)
+# leaks into the SBOM as spurious components/vulnerabilities. cyclonedx-bom pinned.
 # The `reports:cyclonedx` artifact publishes the SBOM into GitLab itself — it is
 # ingested into the project's Dependency List (Secure → Dependency list) — in
 # addition to being kept as a downloadable file. No external service required;
-# the dt-publish job below additionally ships it to Dependency-Track when that
+# the sbom-publish job below additionally ships it to Dependency-Track when that
 # is configured.
 sbom:
   stage: sbom
   script:
+    - python -m venv /tmp/sbom-venv
+    - /tmp/sbom-venv/bin/pip install --upgrade pip
+    - /tmp/sbom-venv/bin/pip install .
     - python -m pip install --upgrade pip "cyclonedx-bom==4.*"
-    - pip install -e ".[dev]"
-    - cyclonedx-py environment --output-format JSON --outfile sbom.json --schema-version 1.6
+    - cyclonedx-py environment /tmp/sbom-venv --output-format JSON --outfile sbom.json --schema-version 1.6
   artifacts:
     paths:
       - sbom.json
@@ -204,8 +209,8 @@ sbom:
 
 # Publish the SBOM to Dependency-Track for continuous supply-chain monitoring.
 # Default branch only, serialized so two uploads can't race. autoCreate stands the
-# project up on first upload; projectVersion tracks the package version. Hard-fails
-# when the Dependency-Track variables aren't configured.
+# project up on first upload; projectVersion tracks the package version. Skips
+# cleanly (via the rule below) when the Dependency-Track variables aren't set.
 sbom-publish:
   stage: sbom
   needs:
