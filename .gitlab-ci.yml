@@ -95,6 +95,9 @@ secret-scan:
     entrypoint: [""]
   variables:
     GIT_DEPTH: 0
+    # Pristine clone so the scan only sees commits reachable from this ref — a
+    # reused (fetch-strategy) build dir can retain force-pushed-away objects.
+    GIT_STRATEGY: clone
   script:
     - |
       BEFORE="${CI_COMMIT_BEFORE_SHA}"
@@ -116,6 +119,9 @@ secret-scan-deep:
     entrypoint: [""]
   variables:
     GIT_DEPTH: 0
+    # Pristine clone so the full-history scan only sees commits reachable from
+    # this ref, not force-pushed-away objects lingering in a reused build dir.
+    GIT_STRATEGY: clone
   script:
     - trufflehog git file://. --exclude-paths=.trufflehog-exclude --fail
 
