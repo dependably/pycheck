@@ -165,6 +165,7 @@ sonarqube-check:
       - .sonar/cache
   rules:
     - if: '$SONAR_TOKEN && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$SONAR_TOKEN && $CI_PIPELINE_SOURCE == "merge_request_event"'
   allow_failure: true
   script:
     - sonar-scanner
