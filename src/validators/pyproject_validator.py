@@ -108,18 +108,22 @@ def _validate_dependencies(project: Dict[str, Any], r: ValidationResult) -> None
 
     opt = project.get("optional-dependencies")
     if opt is not None:
-        if not isinstance(opt, dict):
-            r.add_error("[project.optional-dependencies] must be a table", "PP_OPTDEPS_NOT_TABLE")
-        else:
-            for group, group_deps in opt.items():
-                if not isinstance(group_deps, list):
-                    r.add_error(f"optional-dependencies.{group} must be a list", "PP_OPTDEPS_NOT_TABLE")
-                    continue
-                _validate_dep_list(group_deps, f"optional-dependencies.{group}", r)
+        _validate_optional_dependencies(opt, r)
 
     rp = project.get("requires-python")
     if rp is not None and not is_valid_requires_python(rp):
         r.add_error(f"requires-python is not a valid specifier: {rp!r}", "PP_INVALID_REQUIRES_PYTHON")
+
+
+def _validate_optional_dependencies(opt: Any, r: ValidationResult) -> None:
+    if not isinstance(opt, dict):
+        r.add_error("[project.optional-dependencies] must be a table", "PP_OPTDEPS_NOT_TABLE")
+        return
+    for group, group_deps in opt.items():
+        if not isinstance(group_deps, list):
+            r.add_error(f"optional-dependencies.{group} must be a list", "PP_OPTDEPS_NOT_TABLE")
+            continue
+        _validate_dep_list(group_deps, f"optional-dependencies.{group}", r)
 
 
 def _validate_metadata(project: Dict[str, Any], r: ValidationResult) -> None:

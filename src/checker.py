@@ -654,7 +654,7 @@ def main() -> int:
                 from .validators.runner import run_validators
             if args.verbose:
                 print(f"Validating config artifacts under: {args.target}")
-            exit_code: int = run_validators(args.target, verbose=args.verbose)
+            exit_code: int = run_validators(args.target)
             return exit_code
 
         # Determine mode

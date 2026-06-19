@@ -28,7 +28,7 @@ _INDEX_OPTS = frozenset({"-i", "--index-url", "--extra-index-url"})
 _INCLUDE_OPTS = frozenset({"-r", "--requirement", "-c", "--constraint"})
 
 
-def validate_requirements(content: str, *, source: str = "requirements.txt") -> ValidationResult:
+def validate_requirements(content: str) -> ValidationResult:
     """Validate requirements.txt content."""
     r = ValidationResult()
     r.info["requirements"] = 0

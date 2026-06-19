@@ -25,7 +25,7 @@ from .result import ValidationResult
 # A userinfo component that is *entirely* an env reference is safe; a partial
 # one (``real:secret${X}``) must NOT exempt the line, or a plaintext secret
 # slips by. Supports ${VAR}, $VAR and %(VAR)s style references.
-ENV_REF_ONLY_RE = re.compile(r"^(\$\{[^}]+\}|%\([^)]+\)s|\$[A-Za-z_][A-Za-z0-9_]*)$")
+ENV_REF_ONLY_RE = re.compile(r"^(\$\{[^}]+\}|%\([^)]+\)s|\$[A-Za-z_]\w*)$")
 
 # Codes that fail a run no matter how severity is configured.
 SECURITY_CODES: frozenset = frozenset({"PIP_PLAINTEXT_SECRET", "PIP_TRUSTED_HOST"})
