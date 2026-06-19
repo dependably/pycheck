@@ -42,10 +42,15 @@ Use our issue templates:
    source venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
 
-3. **Install development dependencies:**
+3. **Install development dependencies** (from the private Dependably registry):
    ```bash
-   pip install -e ".[dev]"
+   # One-time: add your registry token to ~/.netrc (chmod 600)
+   #   machine dependably.northwardlabs.ca
+   #     login ci
+   #     password <your REGISTRY_KEY token>
+   make install        # uses ./pip.conf -> https://dependably.northwardlabs.ca/simple/
    ```
+   (`make install` is `PIP_CONFIG_FILE=./pip.conf pip install -e ".[dev]"`.)
 
 4. **Verify the setup:**
    ```bash
