@@ -40,6 +40,25 @@ stages:
   - sbom
   - publish
 
+# Route pip through the private Dependably registry first (PyPI feed at
+# $REGISTRY_URL/simple/, HTTP Basic auth, login "ci"), with public PyPI as a
+# fallback extra-index-url for packages the registry doesn't serve. Mirrors the
+# dependably-community pipeline's REGISTRY_URL/REGISTRY_KEY wiring and HARD-FAILS
+# when either is empty. Credentials are embedded in the index-url so pip carries
+# them through to the package-download URLs on the same host (netrc alone was not
+# applied to the /packages/ fetch -> HTTP 403). GitLab masks REGISTRY_KEY in job
+# logs. Set REGISTRY_URL + REGISTRY_KEY as UNPROTECTED, masked CI/CD variables so
+# merge-request pipelines (unprotected branches) can install too.
+.registry_setup: &registry_setup |
+  if [ -z "${REGISTRY_URL:-}" ] || [ -z "${REGISTRY_KEY:-}" ]; then
+    echo "ERROR: REGISTRY_URL/REGISTRY_KEY are empty — refusing to install from public PyPI." >&2
+    exit 1
+  fi
+  REGISTRY_HOST=$(printf '%s' "$REGISTRY_URL" | sed -E 's#^https?://##; s#/.*##')
+  mkdir -p "$HOME/.config/pip"
+  printf '[global]\nindex-url = https://ci:%s@%s/simple/\nextra-index-url = https://pypi.org/simple/\n' \
+    "$REGISTRY_KEY" "$REGISTRY_HOST" > "$HOME/.config/pip/pip.conf"
+
 # Reusable editable-install + pip cache (keyed on the project metadata).
 .dev_install: &dev_install
   cache:
@@ -52,6 +71,7 @@ stages:
   variables:
     PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
   before_script:
+    - *registry_setup
     - python -m pip install --upgrade pip
     - pip install -e ".[dev]"
 
@@ -172,6 +192,8 @@ sonarqube-check:
 
 build:
   stage: build
+  before_script:
+    - *registry_setup
   script:
     - python -m pip install --upgrade pip build
     - python -m build
@@ -193,6 +215,8 @@ build:
 # is configured.
 sbom:
   stage: sbom
+  before_script:
+    - *registry_setup
   script:
     - python -m venv /tmp/sbom-venv
     - /tmp/sbom-venv/bin/pip install --upgrade pip
@@ -253,12 +277,9 @@ publish:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
       when: manual
       allow_failure: false
+  before_script:
+    - *registry_setup
   script:
-    - |
-      if [ -z "$REGISTRY_URL" ] || [ -z "$REGISTRY_KEY" ]; then
-        echo "ERROR: REGISTRY_URL and REGISTRY_KEY must be set as CI/CD variables." >&2
-        exit 1
-      fi
     - python -m pip install --upgrade twine
     - echo "Uploading $(ls dist/) to $REGISTRY_URL"
     - TWINE_USERNAME="${REGISTRY_USER:-__token__}" TWINE_PASSWORD="$REGISTRY_KEY"

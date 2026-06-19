@@ -1,6 +1,11 @@
 PYTHON ?= python3
 
-.PHONY: install-hooks validate lint test
+.PHONY: install install-hooks validate lint test
+
+# Install the project (with dev extras) from the private Dependably registry.
+# Uses ./pip.conf for the index; put your token in ~/.netrc (see pip.conf).
+install:
+	PIP_CONFIG_FILE=$(CURDIR)/pip.conf $(PYTHON) -m pip install -e ".[dev]"
 
 install-hooks:
 	git config core.hooksPath .githooks
