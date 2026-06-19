@@ -183,6 +183,11 @@ build:
 # Software Bill of Materials (CycloneDX, spec 1.6). Generated on every pipeline
 # from the installed environment so the build's whole supply chain is captured
 # (the prod-only tree is empty — zero runtime deps). cyclonedx-bom is pinned.
+# The `reports:cyclonedx` artifact publishes the SBOM into GitLab itself — it is
+# ingested into the project's Dependency List (Secure → Dependency list) — in
+# addition to being kept as a downloadable file. No external service required;
+# the dt-publish job below additionally ships it to Dependency-Track when that
+# is configured.
 sbom:
   stage: sbom
   script:
@@ -192,6 +197,9 @@ sbom:
   artifacts:
     paths:
       - sbom.json
+    reports:
+      cyclonedx:
+        - sbom.json
     expire_in: 30 days
 
 # Publish the SBOM to Dependency-Track for continuous supply-chain monitoring.
