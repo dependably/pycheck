@@ -187,7 +187,7 @@ sbom:
   script:
     - python -m pip install --upgrade pip "cyclonedx-bom==4.*"
     - pip install -e ".[dev]"
-    - cyclonedx-py environment --output-format JSON --output-file sbom.json --spec-version 1.6
+    - cyclonedx-py environment --output-format JSON --outfile sbom.json --schema-version 1.6
   artifacts:
     paths:
       - sbom.json
