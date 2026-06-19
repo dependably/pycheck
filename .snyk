@@ -1,0 +1,8 @@
+# Snyk policy file.
+# Snyk Code (SAST) file-level exclusions — drops whole test-fixture files whose
+# findings are test-only noise (planted fake credentials, insecure pip configs)
+# used as input data for the validators, never reachable from production code.
+version: v1.25.0
+exclude:
+  code:
+    - tests/fixtures/**

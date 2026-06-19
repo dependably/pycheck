@@ -1,0 +1,248 @@
+# CI/CD pipeline for python-check
+#
+# Flow:  test  →  build  →  sbom  →  publish (manual approval, default branch only)
+#
+#   test     lint + unit tests + security scans on every push/MR
+#   build    wheel + sdist (python -m build), kept as a job artifact
+#   sbom     generate a CycloneDX SBOM (every pipeline); publish it to a
+#            Dependency-Track server on the default branch
+#   publish  manual gate that uploads the built distributions to the private
+#            registry
+#
+# Mirrors the checker-npm / dependably-community pipelines: scanner images are
+# pinned by digest so versions can't drift; the base python image is pinned by
+# tag. Required CI/CD variables (Settings → CI/CD → Variables), "Masked":
+#   REGISTRY_URL          private package index base, e.g. https://dependably.northwardlabs.ca/
+#   REGISTRY_KEY          upload token for that registry (twine password)
+#   REGISTRY_USER         (optional) twine username; defaults to __token__
+#   dependencyTrack_url   Dependency-Track base URL
+#   dependencyTrack_token DT API key with BOM_UPLOAD + PROJECT_CREATION_UPLOAD
+#   SNYK_TOKEN            Snyk Code (SAST) token — set UNPROTECTED + masked so
+#                         merge-request pipelines (unprotected branches) can scan
+#   SONAR_TOKEN           SonarQube analysis token (masked)
+#   SONAR_HOST_URL        SonarQube server base URL
+
+# Avoid running a branch pipeline AND an MR pipeline at once when an MR is open.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+default:
+  image: python:3.12-slim
+
+stages:
+  - test
+  - build
+  - sbom
+  - publish
+
+# Reusable editable-install + pip cache (keyed on the project metadata).
+.dev_install: &dev_install
+  cache:
+    key:
+      files:
+        - pyproject.toml
+        - requirements-dev.txt
+    paths:
+      - .cache/pip
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  before_script:
+    - python -m pip install --upgrade pip
+    - pip install -e ".[dev]"
+
+lint:
+  stage: test
+  <<: *dev_install
+  script:
+    - black --check src/ tests/
+    - flake8 src/ tests/
+    - mypy src/
+
+unit-tests:
+  stage: test
+  <<: *dev_install
+  script:
+    - pip install pytest-cov "coverage[toml]"
+    - python -m pytest tests/ --cov=src --cov-report=xml --cov-report=term
+    # Dogfood the validators against this repo's own committed config.
+    - python src/checker.py --validate .
+  coverage: '/TOTAL.*?(\d+\%)$/'
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+    paths:
+      - coverage.xml
+    expire_in: 1 week
+
+# Secret scan — fail the pipeline on a committed secret. Pinned by digest so the
+# scanner version can't drift. GIT_DEPTH 0 fetches full history. Prefer a fast
+# incremental scan (CI_COMMIT_BEFORE_SHA..HEAD); fall back to a FULL-history scan
+# when the "before" SHA is unusable (first push sentinel, or unreachable after a
+# force-push) so a secret hidden in earlier/rewritten history can't slip the gate.
+# --only-verified keeps it fast/false-positive-free; --fail hard-fails.
+secret-scan:
+  stage: test
+  image:
+    name: trufflesecurity/trufflehog:3.95.3@sha256:9cc33bb080cac0efbbf228a17667172875b529eeeab01efcc4697adfb55f568a
+    entrypoint: [""]
+  variables:
+    GIT_DEPTH: 0
+  script:
+    - |
+      BEFORE="${CI_COMMIT_BEFORE_SHA}"
+      if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+        echo "No usable base commit (first push / force-push) — scanning full history"
+        trufflehog git file://. --only-verified --fail
+      else
+        trufflehog git file://. --since-commit "$BEFORE" --only-verified --fail
+      fi
+
+# Full-history, all-detectors sweep (no --since-commit, no --only-verified) — the
+# thorough counterpart to the fast verified-only gate above. tests/fixtures hold
+# intentional, obviously-fake "planted" secrets used as validator test data, so
+# they're excluded via .trufflehog-exclude; a real finding fails the pipeline.
+secret-scan-deep:
+  stage: test
+  image:
+    name: trufflesecurity/trufflehog:3.95.3@sha256:9cc33bb080cac0efbbf228a17667172875b529eeeab01efcc4697adfb55f568a
+    entrypoint: [""]
+  variables:
+    GIT_DEPTH: 0
+  script:
+    - trufflehog git file://. --exclude-paths=.trufflehog-exclude --fail
+
+# Snyk Code (SAST) — static analysis of the source for security bugs, using the
+# pinned-by-digest snyk/snyk image (same image the sibling pipelines use). This
+# is the project's FIRST Snyk run, so it's deliberately advisory: allow_failure
+# lets findings surface without blocking merges until they're triaged. Once
+# reviewed, flip allow_failure to false to make it a hard gate. The `rules` keep
+# the job out of the pipeline until SNYK_TOKEN exists (set UNPROTECTED + masked,
+# so merge-request pipelines on unprotected branches can read it).
+snyk-code:
+  stage: test
+  image:
+    name: snyk/snyk:linux@sha256:aeb296d943659dccbc7464340bb8741f6e11999cd99644dc92e6d315d6eda3f4
+    entrypoint: [""]
+  allow_failure: true
+  rules:
+    - if: '$SNYK_TOKEN'
+  script:
+    - snyk code test --severity-threshold=high
+
+# SonarQube analysis (quality + coverage). Uses the pinned sonar-scanner-cli
+# image; configuration lives in sonar-project.properties. The scanner reads
+# SONAR_TOKEN / SONAR_HOST_URL from the environment. Scoped to the default branch
+# (post-merge) to avoid per-MR noise, and advisory (allow_failure) for this first
+# integration — flip to a gate once the quality profile is tuned.
+sonarqube-check:
+  stage: test
+  image:
+    name: sonarsource/sonar-scanner-cli:11@sha256:46341f2c2dc560381414e90347885f5cddc716db080adcbafc1cac13e1473094
+    entrypoint: [""]
+  needs:
+    - job: unit-tests
+      artifacts: true
+  variables:
+    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"
+    GIT_DEPTH: "0"
+  cache:
+    key: "${CI_JOB_NAME}"
+    paths:
+      - .sonar/cache
+  rules:
+    - if: '$SONAR_TOKEN && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  allow_failure: true
+  script:
+    - sonar-scanner
+
+build:
+  stage: build
+  script:
+    - python -m pip install --upgrade pip build
+    - python -m build
+  artifacts:
+    paths:
+      - dist/*
+    expire_in: 1 week
+
+# Software Bill of Materials (CycloneDX, spec 1.6). Generated on every pipeline
+# from the installed environment so the build's whole supply chain is captured
+# (the prod-only tree is empty — zero runtime deps). cyclonedx-bom is pinned.
+sbom:
+  stage: sbom
+  script:
+    - python -m pip install --upgrade pip "cyclonedx-bom==4.*"
+    - pip install -e ".[dev]"
+    - cyclonedx-py environment --output-format JSON --output-file sbom.json --spec-version 1.6
+  artifacts:
+    paths:
+      - sbom.json
+    expire_in: 30 days
+
+# Publish the SBOM to Dependency-Track for continuous supply-chain monitoring.
+# Default branch only, serialized so two uploads can't race. autoCreate stands the
+# project up on first upload; projectVersion tracks the package version. Hard-fails
+# when the Dependency-Track variables aren't configured.
+sbom-publish:
+  stage: sbom
+  needs:
+    - job: sbom
+      artifacts: true
+  resource_group: sbom-publish
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  script:
+    - |
+      if [ -z "$dependencyTrack_url" ] || [ -z "$dependencyTrack_token" ]; then
+        echo "ERROR: dependencyTrack_url and dependencyTrack_token must be set as CI/CD variables." >&2
+        exit 1
+      fi
+    - apt-get update && apt-get install --yes --no-install-recommends curl
+    - |
+      set -eu
+      BASE="${dependencyTrack_url%/}"
+      PROJECT=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['name'])")
+      VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+      echo "Publishing SBOM for $PROJECT@$VERSION to $BASE"
+      status=$(curl -sS -o /tmp/bom.out -w '%{http_code}' \
+        -X POST "$BASE/api/v1/bom" \
+        -H "X-Api-Key: $dependencyTrack_token" \
+        -F "autoCreate=true" \
+        -F "projectName=$PROJECT" \
+        -F "projectVersion=$VERSION" \
+        -F "bom=@sbom.json")
+      case "$status" in
+        200) echo "✓ SBOM uploaded";;
+        *) echo "SBOM upload failed (HTTP $status):" >&2; cat /tmp/bom.out >&2; exit 1;;
+      esac
+
+# Upload built distributions to the private registry. Manual approval, default
+# branch only, serialized. Bump the version to release — uploading an existing
+# version fails. The `test`/`build` stages are the authoritative quality gate.
+publish:
+  stage: publish
+  dependencies:
+    - build
+  resource_group: publish
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: false
+  script:
+    - |
+      if [ -z "$REGISTRY_URL" ] || [ -z "$REGISTRY_KEY" ]; then
+        echo "ERROR: REGISTRY_URL and REGISTRY_KEY must be set as CI/CD variables." >&2
+        exit 1
+      fi
+    - python -m pip install --upgrade twine
+    - echo "Uploading $(ls dist/) to $REGISTRY_URL"
+    - TWINE_USERNAME="${REGISTRY_USER:-__token__}" TWINE_PASSWORD="$REGISTRY_KEY"
+      twine upload --non-interactive --repository-url "$REGISTRY_URL" dist/*

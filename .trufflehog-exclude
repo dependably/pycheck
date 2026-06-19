@@ -1,0 +1,6 @@
+# Paths excluded from the full-history TruffleHog sweep (secret-scan-deep).
+# Regexes matched against repository paths, one per line.
+#
+# tests/fixtures hold intentional, obviously-fake "planted" secrets
+# (e.g. PLANTED_FAKE_SECRET_do_not_scan) used as validator test data.
+^tests/fixtures/
