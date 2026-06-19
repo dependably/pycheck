@@ -1,0 +1,14 @@
+[flake8]
+max-line-length = 120
+max-complexity = 10
+# E203/W503 conflict with black's formatting; ignore per black's guidance.
+extend-ignore = E203, W503
+# tests/fixtures are intentional "bad sample" inputs for the checker (unused
+# imports, odd formatting by design) -- never lint them.
+extend-exclude = tests/fixtures, .venv, build, dist
+per-file-ignores =
+    # Test modules insert src/ onto sys.path before importing the package, so
+    # their imports legitimately appear after that statement. W291/W293 fire on
+    # whitespace inside triple-quoted sample-code strings used as test data
+    # (black already enforces real formatting), so ignore them in tests.
+    tests/*: E402, W291, W293

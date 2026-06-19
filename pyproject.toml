@@ -62,7 +62,7 @@ checker = ["py.typed"]
 line-length = 120
 target-version = ['py39']
 include = '\.pyi?$'
-extend-exclude = '''
+force-exclude = '''
 /(
   # directories
   \.eggs
@@ -72,6 +72,9 @@ extend-exclude = '''
   | \.venv
   | build
   | dist
+  # intentional "bad sample" inputs for the checker -- their exact
+  # formatting/imports are test data and must not be reformatted
+  | tests/fixtures
 )/
 '''
 
