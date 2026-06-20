@@ -45,6 +45,54 @@ class ImportInfo:
         return f"ImportInfo(module='{self.module}', names={self.names}, alias='{self.alias}', line={self.line_number})"
 
 
+class _NameReferenceVisitor(ast.NodeVisitor):
+    """Collect names referenced (loaded) in a module, plus `__all__` exports.
+
+    Names listed in `__all__` are re-exported public API, so an import of such a
+    name counts as "used" even when it is not otherwise referenced.
+    """
+
+    def __init__(self, references: Set[str]) -> None:
+        self._references = references
+
+    def visit_Name(self, node: ast.Name) -> None:
+        # Only count names that are being loaded (not stored).
+        if isinstance(node.ctx, ast.Load):
+            self._references.add(node.id)
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        # Handle attribute access like 'module.function'.
+        if isinstance(node.value, ast.Name) and isinstance(node.value.ctx, ast.Load):
+            self._references.add(node.value.id)
+        self.generic_visit(node)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        # Skip import statements themselves.
+        pass
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        # Skip import statements themselves.
+        pass
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        if any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets):
+            self._collect_all_exports(node.value)
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        # Handle `__all__ += [...]`.
+        if isinstance(node.target, ast.Name) and node.target.id == "__all__":
+            self._collect_all_exports(node.value)
+        self.generic_visit(node)
+
+    def _collect_all_exports(self, value: ast.expr) -> None:
+        if isinstance(value, (ast.List, ast.Tuple)):
+            for elt in value.elts:
+                if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                    self._references.add(elt.value)
+
+
 class ImportChecker:
     """Main class for handling Python import checking and cleanup."""
 
@@ -95,6 +143,11 @@ class ImportChecker:
                 # Handle 'from module import name' statements
                 module_name = node.module or ""  # Handle relative imports
 
+                # `from __future__ import ...` are compiler directives, not real
+                # imports — they're never referenced by name, so never "unused".
+                if module_name == "__future__":
+                    continue
+
                 # Store all names from this import in a single ImportInfo object
                 all_names = [alias.name for alias in node.names]
                 all_aliases = [alias.asname for alias in node.names]
@@ -125,32 +178,8 @@ class ImportChecker:
         Returns:
             Set of referenced names
         """
-        references = set()
-
-        class NameVisitor(ast.NodeVisitor):
-            def visit_Name(self, node: ast.Name) -> None:
-                # Only count names that are being loaded (not stored)
-                if isinstance(node.ctx, ast.Load):
-                    references.add(node.id)
-                self.generic_visit(node)
-
-            def visit_Attribute(self, node: ast.Attribute) -> None:
-                # Handle attribute access like 'module.function'
-                if isinstance(node.value, ast.Name) and isinstance(node.value.ctx, ast.Load):
-                    references.add(node.value.id)
-                self.generic_visit(node)
-
-            def visit_Import(self, node: ast.Import) -> None:
-                # Skip import statements themselves
-                pass
-
-            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-                # Skip import statements themselves
-                pass
-
-        visitor = NameVisitor()
-        visitor.visit(tree)
-
+        references: Set[str] = set()
+        _NameReferenceVisitor(references).visit(tree)
         return references
 
     def analyze_imports(
@@ -616,6 +645,37 @@ Examples:
     return parser
 
 
+def _run_validate(target: Path, verbose: bool) -> int:
+    """Dispatch --validate to the validators package (lazy import)."""
+    try:
+        from validators.runner import run_validators
+    except ImportError:  # installed wheel (src.validators)
+        from .validators.runner import run_validators
+    if verbose:
+        print(f"Validating config artifacts under: {target}")
+    exit_code: int = run_validators(target)
+    return exit_code
+
+
+def _run_import_check(args: argparse.Namespace) -> int:
+    """Run the AST import checker in --check or --cleanup mode."""
+    check_mode = args.check
+    if args.verbose:
+        mode_str = "check" if check_mode else "cleanup"
+        print(f"Running in {mode_str} mode on: {args.target}")
+        print(f"Recursive: {args.recursive}")
+
+    checker = ImportChecker(check_mode=check_mode, verbose=args.verbose)
+    checker.run(target_path=args.target, recursive=args.recursive)
+
+    # In check mode, exit non-zero when unused imports are found so the tool can
+    # gate CI / git hooks (linter convention). Cleanup mode returns 0 — it has
+    # already removed them.
+    if check_mode and checker.total_issues > 0:
+        return 1
+    return 0
+
+
 def main() -> int:
     """
     Main entry point for the CLI application.
@@ -624,37 +684,12 @@ def main() -> int:
         Exit code (0 for success, 1 for error)
     """
     try:
-        # Parse command-line arguments
         parser = setup_argument_parser()
         args = parser.parse_args()
 
-        # Validation mode is dispatched to the validators package and returns
-        # early; the AST import-checker path below is untouched.
         if args.validate:
-            # Lazy import so the import-checker fast path stays stdlib-only.
-            try:
-                from validators.runner import run_validators
-            except ImportError:  # installed wheel (src.validators)
-                from .validators.runner import run_validators
-            if args.verbose:
-                print(f"Validating config artifacts under: {args.target}")
-            exit_code: int = run_validators(args.target)
-            return exit_code
-
-        # Determine mode
-        check_mode = args.check
-
-        if args.verbose:
-            mode_str = "check" if check_mode else "cleanup"
-            print(f"Running in {mode_str} mode on: {args.target}")
-            print(f"Recursive: {args.recursive}")
-
-        # Create and run checker
-        checker = ImportChecker(check_mode=check_mode, verbose=args.verbose)
-
-        checker.run(target_path=args.target, recursive=args.recursive)
-
-        return 0
+            return _run_validate(args.target, args.verbose)
+        return _run_import_check(args)
 
     except ImportCheckerError as e:
         print(f"Error: {e}", file=sys.stderr)
