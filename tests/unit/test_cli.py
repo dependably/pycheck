@@ -205,6 +205,7 @@ class TestMainFunction:
 
         mock_checker = MagicMock()
         mock_checker_class.return_value = mock_checker
+        mock_checker.total_issues = 0
 
         with patch.object(sys, "argv", ["checker.py", "--check", str(test_file)]):
             result = main()
@@ -221,6 +222,7 @@ class TestMainFunction:
 
         mock_checker = MagicMock()
         mock_checker_class.return_value = mock_checker
+        mock_checker.total_issues = 0
 
         with patch.object(sys, "argv", ["checker.py", "--cleanup", str(test_file)]):
             result = main()
@@ -250,6 +252,22 @@ class TestMainFunction:
 
         assert result == 1
 
+    def test_main_check_exits_nonzero_on_unused(self, tmp_path):
+        """--check returns 1 when unused imports are found (gates CI/hooks)."""
+        test_file = tmp_path / "x.py"
+        test_file.write_text("import os\nimport sys\nprint(os.getcwd())\n")  # sys unused
+
+        with patch.object(sys, "argv", ["checker.py", "--check", str(test_file)]):
+            assert main() == 1
+
+    def test_main_check_exits_zero_when_clean(self, tmp_path):
+        """--check returns 0 when there are no unused imports."""
+        test_file = tmp_path / "x.py"
+        test_file.write_text("import os\nprint(os.getcwd())\n")
+
+        with patch.object(sys, "argv", ["checker.py", "--check", str(test_file)]):
+            assert main() == 0
+
     @patch("checker.ImportChecker")
     def test_main_verbose_mode(self, mock_checker_class, tmp_path):
         """Test main function with verbose option."""
@@ -258,6 +276,7 @@ class TestMainFunction:
 
         mock_checker = MagicMock()
         mock_checker_class.return_value = mock_checker
+        mock_checker.total_issues = 0
 
         with patch.object(sys, "argv", ["checker.py", "--check", "--verbose", str(test_file)]):
             result = main()
@@ -270,6 +289,7 @@ class TestMainFunction:
         """Test main function with no-recursive option."""
         mock_checker = MagicMock()
         mock_checker_class.return_value = mock_checker
+        mock_checker.total_issues = 0
 
         with patch.object(sys, "argv", ["checker.py", "--check", "--no-recursive", str(tmp_path)]):
             result = main()
@@ -287,6 +307,7 @@ class TestMainFunction:
         mock_checker = MagicMock()
         mock_checker.run.side_effect = ImportCheckerError("Test error")
         mock_checker_class.return_value = mock_checker
+        mock_checker.total_issues = 0
 
         with patch.object(sys, "argv", ["checker.py", "--check", str(test_file)]):
             result = main()
@@ -304,6 +325,7 @@ class TestMainFunction:
         mock_checker = MagicMock()
         mock_checker.run.side_effect = KeyboardInterrupt()
         mock_checker_class.return_value = mock_checker
+        mock_checker.total_issues = 0
 
         with patch.object(sys, "argv", ["checker.py", "--check", str(test_file)]):
             result = main()
@@ -321,6 +343,7 @@ class TestMainFunction:
         mock_checker = MagicMock()
         mock_checker.run.side_effect = RuntimeError("Unexpected error")
         mock_checker_class.return_value = mock_checker
+        mock_checker.total_issues = 0
 
         with patch.object(sys, "argv", ["checker.py", "--check", str(test_file)]):
             result = main()
@@ -346,6 +369,7 @@ class TestMainFunction:
 
         mock_checker = MagicMock()
         mock_checker_class.return_value = mock_checker
+        mock_checker.total_issues = 0
 
         with patch.object(sys, "argv", ["checker.py", "--check", "--verbose", str(test_file)]):
             result = main()

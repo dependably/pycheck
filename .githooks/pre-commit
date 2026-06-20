@@ -1,14 +1,18 @@
 #!/bin/sh
 # Pre-commit hook for checker-python.
 #
-# Dogfoods the config validators on this repo's own artifacts, then runs the
-# code-quality gates on the *staged* Python files. Install with:
+# Dogfoods the tool on this repo (unused-import --check + config --validate),
+# then runs the code-quality gates on the *staged* Python files. Install with:
 #   make install-hooks      (or ./scripts/install-hooks.sh)
 # which points git's core.hooksPath at .githooks/.
 set -e
 
 ROOT="$(git rev-parse --show-toplevel)"
 PY="${PYTHON:-python3}"
+
+echo "[pre-commit] Checking src/ for unused imports (dogfood)..."
+# src/ only — tests/fixtures intentionally contain unused imports as test data.
+"$PY" "$ROOT/src/checker.py" --check "$ROOT/src"
 
 echo "[pre-commit] Validating committed config artifacts (dogfood)..."
 "$PY" "$ROOT/src/checker.py" --validate "$ROOT"

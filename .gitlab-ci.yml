@@ -89,7 +89,9 @@ unit-tests:
   script:
     - pip install pytest-cov "coverage[toml]"
     - python -m pytest tests/ --cov=src --cov-report=xml --cov-report=term
-    # Dogfood the validators against this repo's own committed config.
+    # Dogfood the tool against this repo: unused-import check (src/ only — the
+    # fixtures intentionally carry unused imports) + committed config validation.
+    - python src/checker.py --check src/
     - python src/checker.py --validate .
   coverage: '/TOTAL.*?(\d+\%)$/'
   artifacts:
