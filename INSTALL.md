@@ -6,8 +6,8 @@
 
 ```bash
 # Clone the repository
-git clone <repository-url>
-cd PythonLibraryChecker
+git clone https://gitlab.northwardlabs.ca/dependably/python-check.git
+cd python-check
 
 # Create a virtual environment (recommended)
 python -m venv .venv
@@ -24,10 +24,10 @@ pip install -r requirements-dev.txt
 
 ```bash
 # Install from wheel file
-pip install dist/python_library_checker-1.0.0-py3-none-any.whl
+pip install dist/python_library_checker-1.1.0-py3-none-any.whl
 
 # Or install from source distribution
-pip install dist/python_library_checker-1.0.0.tar.gz
+pip install dist/python_library_checker-1.1.0.tar.gz
 ```
 
 ### 3. Build and Install
@@ -40,7 +40,7 @@ pip install build
 python -m build
 
 # Install the built package
-pip install dist/python_library_checker-1.0.0-py3-none-any.whl
+pip install dist/python_library_checker-1.1.0-py3-none-any.whl
 ```
 
 ## Usage
@@ -74,7 +74,7 @@ checker.run(Path("myfile.py"))
 
 ## Requirements
 
-- Python 3.7 or higher
+- Python 3.9 or higher
 - No external dependencies (uses only Python standard library)
 
 ## Development Dependencies (Optional)

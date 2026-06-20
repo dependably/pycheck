@@ -4,7 +4,7 @@ Thank you for your interest in contributing to Python Library Checker! We welcom
 
 ## Code of Conduct
 
-This project adheres to the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code.
+This project follows the [Contributor Covenant](https://www.contributor-covenant.org/). By participating, you are expected to be respectful and constructive.
 
 ## How to Contribute
 
@@ -16,15 +16,13 @@ Before creating an issue, please:
 2. **Use the latest version** to ensure the issue hasn't been fixed
 3. **Provide clear reproduction steps** with example files when possible
 
-Use our issue templates:
-- [Bug Report](.github/ISSUE_TEMPLATE/bug_report.md) for bugs
-- [Feature Request](.github/ISSUE_TEMPLATE/feature_request.md) for new features
+[Open an issue](https://gitlab.northwardlabs.ca/dependably/python-check/-/issues) on GitLab — describe bugs with reproduction steps and example files, and feature requests with the use case.
 
 ### Development Setup
 
 #### Prerequisites
 
-- Python 3.7 or higher
+- Python 3.9 or higher
 - Git
 - Basic familiarity with Python AST and import analysis (helpful but not required)
 
@@ -32,8 +30,8 @@ Use our issue templates:
 
 1. **Fork and clone the repository:**
    ```bash
-   git clone https://github.com/yourusername/python-library-checker.git
-   cd python-library-checker
+   git clone https://gitlab.northwardlabs.ca/dependably/python-check.git
+   cd python-check
    ```
 
 2. **Create a virtual environment (recommended):**
@@ -151,9 +149,8 @@ def find_unused_imports(file_path: str, verbose: bool = False) -> List[str]:
 
 2. **Test with existing test files:**
    ```bash
-   # Test your changes against known good/bad files
-   python src/checker.py --check tests/test_basic_unused.py
-   python src/checker.py --cleanup tests/test_basic_unused.py
+   # Test your changes against known good/bad sample files
+   python src/checker.py --check tests/fixtures/test_basic_unused.py
    ```
 
 #### Running Tests
@@ -205,13 +202,12 @@ pytest tests/ -v
    git push origin feature/your-feature-name
    ```
 
-2. **Create a pull request** using our [PR template](.github/PULL_REQUEST_TEMPLATE.md)
+2. **Create a merge request** on GitLab against `main`
 
-3. **Fill out the template completely:**
+3. **Describe your change completely:**
    - Clear description of changes
    - Link to related issues
    - Testing instructions
-   - Screenshots if UI changes
 
 #### PR Review Process
 
@@ -273,7 +269,7 @@ python src/checker.py --check tests/ --verbose
 python src/checker.py --check your_project/ --verbose
 
 # Test cleanup (creates backups)
-cp tests/test_basic_unused.py temp_test.py
+cp tests/fixtures/test_basic_unused.py temp_test.py
 python src/checker.py --cleanup temp_test.py
 # Verify the changes are correct
 ```
@@ -299,9 +295,8 @@ We follow [semantic versioning](https://semver.org/):
 
 ### Communication Channels
 
-- **GitHub Issues**: Bug reports and feature requests
-- **GitHub Discussions**: General questions and ideas
-- **Pull Request Comments**: Code-specific discussions
+- **GitLab Issues**: Bug reports and feature requests
+- **Merge Request Comments**: Code-specific discussions
 
 ### Documentation
 
@@ -314,16 +309,15 @@ We follow [semantic versioning](https://semver.org/):
 Don't hesitate to ask questions! We're here to help:
 
 1. **Check existing issues** for similar questions
-2. **Open a discussion** for general questions
-3. **Create an issue** for specific problems
-4. **Comment on PRs** for code-related questions
+2. **Create an issue** for general questions or specific problems
+3. **Comment on merge requests** for code-related questions
 
 ## Recognition
 
 Contributors are recognized in several ways:
 
-- **GitHub contributors page**
+- **GitLab contributors page**
 - **Release notes** for significant contributions
-- **Issue/PR acknowledgments**
+- **Issue/MR acknowledgments**
 
 Thank you for contributing to Python Library Checker! 🐍✨
