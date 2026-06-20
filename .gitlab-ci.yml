@@ -30,9 +30,18 @@ workflow:
       when: never
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG
+  # Cancel a running pipeline when a newer commit is pushed to the same ref —
+  # only the interruptible jobs (everything except the side-effecting publish
+  # jobs, see below) are cancelled.
+  auto_cancel:
+    on_new_commit: interruptible
 
+# Jobs are interruptible by default so workflow:auto_cancel can cancel redundant
+# runs; the publish / sbom-publish jobs override this to false (don't kill an
+# in-flight upload).
 default:
   image: python:3.12-slim
+  interruptible: true
 
 stages:
   - test
@@ -239,6 +248,7 @@ sbom:
 # cleanly (via the rule below) when the Dependency-Track variables aren't set.
 sbom-publish:
   stage: sbom
+  interruptible: false  # don't cancel an in-flight Dependency-Track upload
   needs:
     - job: sbom
       artifacts: true
@@ -272,6 +282,7 @@ sbom-publish:
 # version fails. The `test`/`build` stages are the authoritative quality gate.
 publish:
   stage: publish
+  interruptible: false  # don't cancel an in-flight registry upload
   dependencies:
     - build
   resource_group: publish
