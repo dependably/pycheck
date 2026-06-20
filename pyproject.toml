@@ -43,9 +43,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/python-library-checker"
-"Bug Reports" = "https://github.com/yourusername/python-library-checker/issues"
-"Source" = "https://github.com/yourusername/python-library-checker"
+Homepage = "https://gitlab.northwardlabs.ca/dependably/python-check"
+"Bug Reports" = "https://gitlab.northwardlabs.ca/dependably/python-check/-/issues"
+"Source" = "https://gitlab.northwardlabs.ca/dependably/python-check"
 
 [project.scripts]
 python-import-checker = "src.checker:main"
@@ -80,7 +80,9 @@ force-exclude = '''
 
 # MyPy configuration
 [tool.mypy]
-python_version = "3.9"
+# Lowest version current mypy will type-check against; the package still
+# supports runtime 3.9+ (see [project] requires-python).
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

@@ -4,44 +4,70 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Python Library Checker - A tool to analyze Python files for unused imports and optionally clean them up.
+Python Library Checker - A tool to analyze Python files for unused imports and
+optionally clean them up, plus validate committed packaging config artifacts.
 
 **Core functionality:**
-1. **Check mode**: Analyze imports without making changes
-2. **Cleanup mode**: Remove unused imports from files
+1. **Check mode** (`--check`): Read-only analysis of unused imports
+2. **Cleanup mode** (`--cleanup`): Remove unused imports from files (with backups)
+3. **Validate mode** (`--validate`): Validate committed config artifacts
+   (`pyproject.toml`, `pip.conf`/`pip.ini`, `requirements*.txt`)
+
+Pure standard library at runtime — no external dependencies. Requires Python 3.9+.
 
 ## Architecture
 
-**Simple single-module structure:**
-- `src/checker.py` - Main implementation (currently empty, needs to be built)
-- Entry point should accept command-line arguments for check-only vs cleanup modes
+- `src/checker.py` - CLI entry point and the AST-based import checker
+  (`ImportChecker`, `ImportInfo`, `_NameReferenceVisitor`). Handles arg parsing,
+  file/directory traversal, and `--check`/`--cleanup`/`--validate` dispatch.
+  `main()` is the entry point exposed as the `import-checker` console script.
+- `src/validators/` - The `--validate` package:
+  - `runner.py` - discovers config artifacts under the target and runs the
+    matching validator; prints a per-file report and returns the exit code.
+  - `pyproject_validator.py`, `pip_conf_validator.py`,
+    `requirements_validator.py` - one validator per artifact type.
+  - `result.py` - `ValidationResult` plus the error/warning finding types.
+  - `_pep508.py` - minimal PEP 508 requirement parsing shared by the validators.
+
+The package supports both the flat layout (tests put `src/` on `sys.path`, so
+sibling modules import as `validators.*`) and the installed-wheel layout
+(`src.validators.*`). `checker.py` lazily imports the runner under a try/except
+to handle both.
 
 ## Development Commands
 
 **Running the tool:**
 ```bash
-# Check mode (read-only analysis)
-python src/checker.py --check <file_or_directory>
-
-# Cleanup mode (removes unused imports)  
-python src/checker.py --cleanup <file_or_directory>
+python src/checker.py --check <file_or_directory>      # read-only analysis
+python src/checker.py --cleanup <file_or_directory>    # remove unused imports
+python src/checker.py --validate <dir>                 # validate config artifacts
 ```
 
-**Testing:**
+**Quality gates (mirror CI in `.gitlab-ci.yml`):**
 ```bash
-# Run on the checker itself
-python src/checker.py --check src/checker.py
+black --check src/ tests/
+flake8 src/ tests/
+mypy src/
+python -m pytest tests/ --cov=src --cov-report=term
+
+# Dogfood the tool on this repo (matches the CI unit-tests job)
+python src/checker.py --check src/      # src/ only; fixtures carry unused imports on purpose
+python src/checker.py --validate .
 ```
 
 ## Implementation Notes
 
-**Core logic needed:**
-- Parse Python files using `ast` module to identify imports
-- Track actual usage of imported names throughout the file
-- Differentiate between direct imports (`import module`) and from-imports (`from module import name`)
-- Handle edge cases like star imports (`from module import *`)
+**Import analysis:**
+- Parses files with the `ast` module; never executes target code
+- Tracks loaded names via `_NameReferenceVisitor`; an import is "used" if its
+  name (or alias) is referenced, or re-exported through `__all__`
+- Distinguishes `import module` (matches dotted base) from
+  `from module import name` (tracks individual names; partial removal supported)
+- `from __future__ import ...` is skipped (compiler directives, never "unused")
+- Cleanup preserves formatting, handles parenthesized/backslash-continued
+  statements, keeps inline comments, and writes a `.backup` before modifying
 
-**Command-line interface:**
-- Use `argparse` for argument parsing
-- Support both file and directory inputs
-- Provide clear output showing unused imports found
+**CLI conventions:**
+- `--check`/`--cleanup`/`--validate` are a required mutually-exclusive group
+- `--check` exits non-zero when unused imports are found (lints/gates CI/hooks)
+- `--validate` exits non-zero only on errors; warnings (e.g. unpinned deps) pass

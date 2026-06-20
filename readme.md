@@ -1,11 +1,8 @@
 # Python Library Checker
 
-[![CI](https://github.com/yourusername/python-library-checker/workflows/CI/badge.svg)](https://github.com/yourusername/python-library-checker/actions/workflows/ci.yml)
-[![Release](https://github.com/yourusername/python-library-checker/workflows/Release/badge.svg)](https://github.com/yourusername/python-library-checker/actions/workflows/release.yml)
-[![Security](https://github.com/yourusername/python-library-checker/workflows/Security/badge.svg)](https://github.com/yourusername/python-library-checker/actions/workflows/security.yml)
-[![codecov](https://codecov.io/gh/yourusername/python-library-checker/branch/main/graph/badge.svg)](https://codecov.io/gh/yourusername/python-library-checker)
-[![PyPI version](https://badge.fury.io/py/python-library-checker.svg)](https://badge.fury.io/py/python-library-checker)
-[![Python versions](https://img.shields.io/pypi/pyversions/python-library-checker.svg)](https://pypi.org/project/python-library-checker/)
+[![pipeline status](https://gitlab.northwardlabs.ca/dependably/python-check/badges/main/pipeline.svg)](https://gitlab.northwardlabs.ca/dependably/python-check/-/commits/main)
+[![coverage report](https://gitlab.northwardlabs.ca/dependably/python-check/badges/main/coverage.svg)](https://gitlab.northwardlabs.ca/dependably/python-check/-/commits/main)
+[![Python versions](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
@@ -15,6 +12,7 @@ A powerful command-line tool to analyze and clean up unused imports in Python fi
 
 - **Check Mode**: Analyze imports without making any changes to your files
 - **Cleanup Mode**: Automatically remove unused imports with backup creation
+- **Validate Mode**: Validate committed packaging config (`pyproject.toml`, `pip.conf`, `requirements*.txt`)
 - **Smart Analysis**: Uses AST parsing for accurate import detection
 - **Partial Import Handling**: Handles complex `from module import a, b, c` statements intelligently
 - **Recursive Directory Processing**: Process entire directory trees or single files
@@ -26,15 +24,15 @@ A powerful command-line tool to analyze and clean up unused imports in Python fi
 
 ### Prerequisites
 
-- Python 3.7 or higher
+- Python 3.9 or higher
 - No external dependencies required (uses only Python standard library)
 
 ### Quick Start
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/PythonLibraryChecker.git
-cd PythonLibraryChecker
+git clone https://gitlab.northwardlabs.ca/dependably/python-check.git
+cd python-check
 ```
 
 2. Run the tool directly:
@@ -59,15 +57,16 @@ ln -s $(pwd)/src/checker.py /usr/local/bin/python-import-checker
 ### Command-Line Interface
 
 ```bash
-python src/checker.py [--check | --cleanup] target [options]
+python src/checker.py [--check | --cleanup | --validate] target [options]
 ```
 
 ### Required Arguments
 
 - `target`: Path to Python file or directory to process
 - Mode (one required):
-  - `--check`: Perform read-only analysis (no changes made)
+  - `--check`: Perform read-only analysis of unused imports (no changes made)
   - `--cleanup`: Remove unused imports (modifies files)
+  - `--validate`: Validate committed config artifacts under the target
 
 ### Optional Arguments
 
@@ -108,6 +107,33 @@ python src/checker.py --cleanup --no-recursive ./src/
 **Get detailed analysis information:**
 ```bash
 python src/checker.py --check --verbose ./src/
+```
+
+### Validate Config Artifacts
+
+**Validate committed packaging config in a directory:**
+```bash
+python src/checker.py --validate .
+```
+
+`--validate` discovers and checks `pyproject.toml`, `pip.conf`/`pip.ini`, and
+`requirements*.txt` under the target, reporting issues per file. It exits
+non-zero only when an **error** is found; **warnings** (such as unpinned
+dependencies) are reported but still pass. Example output:
+
+```bash
+$ python src/checker.py --validate .
+Validating: pyproject.toml
+  OK (no issues)
+Validating: pip.conf
+  OK (no issues)
+Validating: requirements-dev.txt
+  7 warning(s):
+    [REQ_UNPINNED] line 2: unpinned dependency 'pytest>=6.0.0' (no == pin)
+Validating: requirements.txt
+  OK (no issues)
+
+Validation complete: 4 file(s), 0 error(s), 7 warning(s)
 ```
 
 ## Sample Output
@@ -187,9 +213,8 @@ The tool uses Python's built-in AST (Abstract Syntax Tree) module to:
 
 ### Python Version Support
 
-- **Python 3.7+**: Full support
-- **Python 3.6**: May work but not officially supported
-- **Python 2.x**: Not supported
+- **Python 3.9+**: Full support (3.9, 3.10, 3.11, 3.12, 3.13)
+- **Python 3.8 and earlier**: Not supported
 
 ### File Support
 
@@ -228,8 +253,8 @@ We welcome contributions from developers of all skill levels! Please see our [CO
 
 1. **Development Setup**: Clone the repository and set up your environment:
 ```bash
-git clone https://github.com/yourusername/PythonLibraryChecker.git
-cd PythonLibraryChecker
+git clone https://gitlab.northwardlabs.ca/dependably/python-check.git
+cd python-check
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -e ".[dev]"
@@ -246,19 +271,19 @@ pytest tests/              # Testing
 3. **Testing Your Changes**:
 ```bash
 # Test on various scenarios
-python src/checker.py --check tests/ --verbose
-python src/checker.py --cleanup tests/test_basic_unused.py
+python src/checker.py --check tests/fixtures/ --verbose
+python src/checker.py --validate .
 ```
 
 ### How to Contribute
 
-- **🐛 Found a bug?** Use our [Bug Report Template](.github/ISSUE_TEMPLATE/bug_report.yml)
-- **💡 Have a feature idea?** Use our [Feature Request Template](.github/ISSUE_TEMPLATE/feature_request.yml)
-- **🔧 Ready to code?** Check our [Pull Request Template](.github/PULL_REQUEST_TEMPLATE.md)
+- **🐛 Found a bug?** [Open an issue](https://gitlab.northwardlabs.ca/dependably/python-check/-/issues) with reproduction steps and example files
+- **💡 Have a feature idea?** [Open an issue](https://gitlab.northwardlabs.ca/dependably/python-check/-/issues) describing the use case
+- **🔧 Ready to code?** Open a merge request — see [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow
 
 ### Code Standards
 
-- **Python 3.7+** compatibility required
+- **Python 3.9+** compatibility required
 - **Type hints** for all function signatures
 - **Black formatting** with 120-character line length
 - **Comprehensive tests** for new functionality
@@ -287,13 +312,18 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed technical requirements, test
 1. Use `--verbose` mode for detailed output
 2. Check that your Python files have correct syntax
 3. Verify file permissions and paths
-4. Open an issue on GitHub with example files and error messages
+4. Open an issue on GitLab with example files and error messages
 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Changelog
+
+### Version 1.1.0
+- Added `--validate` mode for committed config artifacts (`pyproject.toml`, `pip.conf`/`pip.ini`, `requirements*.txt`)
+- `__future__`/`__all__` handling: no longer flags `from __future__` imports or names re-exported via `__all__`
+- Internal refactor to reduce cognitive complexity; expanded test suite and CI quality gates
 
 ### Version 1.0.0
 - Initial release
