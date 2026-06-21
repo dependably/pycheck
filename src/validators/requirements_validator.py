@@ -45,26 +45,31 @@ def validate_requirements(content: str, *, allowed_hosts: Optional[Sequence[str]
     for i, raw in enumerate(content.splitlines(), start=1):
         # Strip inline comments (`` #`` per pip) and surrounding whitespace.
         line = raw.split(" #", 1)[0].strip() if " #" in raw else raw.strip()
-        if not line or line.startswith("#"):
-            continue
-
-        if line.startswith("-"):
-            _check_option(line, i, includes, r, trusted)
-            continue
-
-        if _URL_REQUIREMENT_RE.match(line):
-            _check_url_requirement(line, i, r)
-            continue
-
-        r.info["requirements"] += 1
-        if not is_valid_pep508(line):
-            r.add_error(f"invalid requirement: {line!r}", "REQ_INVALID", line=i)
-        elif not _PINNED_RE.search(line) and ";" not in line:
-            r.add_warning(f"unpinned dependency {line!r} (no == pin)", "REQ_UNPINNED", line=i)
+        if line and not line.startswith("#"):
+            _check_requirement_line(line, i, includes, r, trusted)
 
     if includes:
         r.info["includes"] = includes
     return r
+
+
+def _check_requirement_line(
+    line: str, lineno: int, includes: list[str], r: ValidationResult, trusted: frozenset
+) -> None:
+    """Classify and validate a single non-blank, non-comment requirements line."""
+    if line.startswith("-"):
+        _check_option(line, lineno, includes, r, trusted)
+        return
+
+    if _URL_REQUIREMENT_RE.match(line):
+        _check_url_requirement(line, lineno, r)
+        return
+
+    r.info["requirements"] += 1
+    if not is_valid_pep508(line):
+        r.add_error(f"invalid requirement: {line!r}", "REQ_INVALID", line=lineno)
+    elif not _PINNED_RE.search(line) and ";" not in line:
+        r.add_warning(f"unpinned dependency {line!r} (no == pin)", "REQ_UNPINNED", line=lineno)
 
 
 def _check_option(line: str, lineno: int, includes: list[str], r: ValidationResult, trusted: frozenset) -> None:
