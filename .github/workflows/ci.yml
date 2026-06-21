@@ -1,0 +1,104 @@
+name: CI
+
+# GitHub Actions CI for the public GitHub mirror (dependably/python-check).
+#
+# Flow:  secret-scan + lint + test  →  build
+#
+# This is the GitHub-side counterpart to .gitlab-ci.yml. GitLab remains the
+# authoritative pipeline (lint, tests, security scans, SBOM, private-registry
+# publish); GitLab's manual `publish-github` job mirrors the source here, and
+# this workflow re-validates it. It installs everything from PUBLIC PyPI — the
+# private Dependably registry is GitLab-only.
+#
+# TruffleHog runs from the same digest-pinned image used by GitLab so the
+# scanner version can't drift between the two pipelines.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref (the build/publish side-effects live in
+# GitLab, so cancelling in-flight GitHub runs is always safe).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TRUFFLEHOG_IMAGE: trufflesecurity/trufflehog:3.95.3@sha256:9cc33bb080cac0efbbf228a17667172875b529eeeab01efcc4697adfb55f568a
+
+jobs:
+  # Secret scan — fail the build on a committed secret. Mirrors the GitLab
+  # secret-scan / secret-scan-deep jobs (same pinned image): a fast verified-only
+  # full-history sweep plus a thorough all-detectors sweep that excludes the
+  # tests/ fixtures' intentionally-planted fake secrets (.trufflehog-exclude).
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so a secret in earlier commits can't slip
+      - name: Verified secret scan (full history)
+        run: |
+          docker run --rm -v "$PWD:/repo" "$TRUFFLEHOG_IMAGE" \
+            git file:///repo --only-verified --fail
+      - name: Deep secret scan (all detectors, fixtures excluded)
+        run: |
+          docker run --rm -v "$PWD:/repo" "$TRUFFLEHOG_IMAGE" \
+            git file:///repo --exclude-paths=/repo/.trufflehog-exclude --fail
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - run: black --check src/ tests/
+      - run: flake8 src/ tests/
+      - run: mypy src/
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]" pytest-cov "coverage[toml]"
+      - run: python -m pytest tests/ --cov=src --cov-report=term
+      # Dogfood the tool on this repo, matching the GitLab unit-tests job:
+      # unused-import check (src/ only — fixtures carry unused imports on purpose)
+      # plus committed-config validation.
+      - run: python src/checker.py --check src/
+      - run: python src/checker.py --validate .
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [secret-scan, lint, test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip build
+      - run: python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          retention-days: 7
