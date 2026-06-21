@@ -3,7 +3,7 @@
 [![pipeline status](https://gitlab.northwardlabs.ca/dependably/python-check/badges/main/pipeline.svg)](https://gitlab.northwardlabs.ca/dependably/python-check/-/commits/main)
 [![coverage report](https://gitlab.northwardlabs.ca/dependably/python-check/badges/main/coverage.svg)](https://gitlab.northwardlabs.ca/dependably/python-check/-/commits/main)
 [![Python versions](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 A powerful command-line tool to analyze and clean up unused imports in Python files. Keep your Python code clean and efficient by automatically detecting and removing unnecessary imports.
@@ -66,15 +66,33 @@ python src/checker.py [--check | --cleanup | --validate] target [options]
 - Mode (one required):
   - `--check`: Perform read-only analysis of unused imports (no changes made)
   - `--cleanup`: Remove unused imports (modifies files)
-  - `--validate`: Validate committed config artifacts under the target
+  - `--validate`: Validate committed config artifacts under the target (pyproject.toml, pip.conf, requirements*.txt)
 
 ### Optional Arguments
 
 - `--recursive`: Process directories recursively (default: True)
 - `--no-recursive`: Process only the specified directory level
 - `--verbose`, `-v`: Enable detailed output
+- `--config <path>`: Path to a `.dependably-check` config (validate mode). When
+  omitted, the file is discovered by walking up from the target to the repo root.
 - `--version`: Show version information
 - `--help`: Display help message
+
+### Validate mode and `.dependably-check`
+
+In `--validate` mode the tool flags any pip index host that is neither a public
+default (`pypi.org`, `files.pythonhosted.org`) nor allowlisted. Declare trusted
+private registries once in a repo-root `.dependably-check` JSON file:
+
+```json
+{
+  "common": { "allowedRegistryHosts": ["dependably.northwardlabs.ca"] },
+  "python": { "allowedRegistryHosts": [] }
+}
+```
+
+The Python tool reads the union of `common.allowedRegistryHosts` and
+`python.allowedRegistryHosts`; other sections are ignored.
 
 ## Examples
 
@@ -316,7 +334,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed technical requirements, test
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 
 ## Changelog
 

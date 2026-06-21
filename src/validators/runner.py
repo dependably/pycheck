@@ -9,8 +9,9 @@ process exit code (0 = no errors anywhere, 1 = at least one error).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
+from .config import resolve_allowed_hosts
 from .pip_conf_validator import validate_pip_conf
 from .pyproject_validator import validate_pyproject
 from .requirements_validator import validate_requirements
@@ -43,9 +44,22 @@ def discover_config_files(target: Path) -> List[Tuple[Path, _Validator]]:
     return found
 
 
-def run_validators(target: Path) -> int:
-    """Validate every discovered artifact and print a report. Returns exit code."""
+def run_validators(
+    target: Path,
+    *,
+    allowed_hosts: Optional[Sequence[str]] = None,
+    config_path: Optional[Path] = None,
+) -> int:
+    """Validate every discovered artifact and print a report. Returns exit code.
+
+    ``allowed_hosts`` -- explicit trusted registry hosts to pass to the index
+    validators. When ``None`` they are resolved from the shared
+    ``.dependably-check`` config (an explicit ``config_path``, else discovery by
+    walking up from ``target``).
+    """
     target = Path(target)
+    if allowed_hosts is None:
+        allowed_hosts = resolve_allowed_hosts(target, config_path)
     files = discover_config_files(target)
 
     if not files:
@@ -64,13 +78,27 @@ def run_validators(target: Path) -> int:
             total_errors += 1
             continue
 
-        result = validator(content)
+        result = _invoke(validator, content, allowed_hosts)
         total_errors += len(result.errors)
         total_warnings += len(result.warnings)
         _print_result(path, result)
 
     print(f"\nValidation complete: {len(files)} file(s), {total_errors} error(s), {total_warnings} warning(s)")
     return 1 if total_errors else 0
+
+
+def _invoke(validator: _Validator, content: str, allowed_hosts: Sequence[str]) -> ValidationResult:
+    """Call a validator, threading ``allowed_hosts`` into the index validators.
+
+    The pip.conf and requirements validators take an ``allowed_hosts`` keyword;
+    pyproject does not. Dispatch by identity so each receives only what it
+    accepts.
+    """
+    if validator is validate_pip_conf:
+        return validate_pip_conf(content, allowed_hosts=allowed_hosts)
+    if validator is validate_requirements:
+        return validate_requirements(content, allowed_hosts=allowed_hosts)
+    return validator(content)
 
 
 def _print_result(path: Path, result: ValidationResult) -> None:

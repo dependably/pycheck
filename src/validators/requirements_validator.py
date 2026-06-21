@@ -9,13 +9,14 @@ pip.conf validator -- treats credentials embedded in an index URL and
 from __future__ import annotations
 
 import re
+from typing import Optional, Sequence
 from urllib.parse import urlsplit
 
 from ._pep508 import is_valid_pep508
-from .pip_conf_validator import _is_env_ref, _redact
+from .pip_conf_validator import PUBLIC_INDEX_HOSTS, _is_env_ref, _redact
 from .result import ValidationResult
 
-SECURITY_CODES: frozenset = frozenset({"REQ_PLAINTEXT_SECRET", "REQ_TRUSTED_HOST"})
+SECURITY_CODES: frozenset = frozenset({"REQ_PLAINTEXT_SECRET", "REQ_TRUSTED_HOST", "REQ_UNTRUSTED_INDEX"})
 
 # Pinned to an exact version (``==`` or ``===``).
 _PINNED_RE = re.compile(r"(===|==)")
@@ -28,8 +29,15 @@ _INDEX_OPTS = frozenset({"-i", "--index-url", "--extra-index-url"})
 _INCLUDE_OPTS = frozenset({"-r", "--requirement", "-c", "--constraint"})
 
 
-def validate_requirements(content: str) -> ValidationResult:
-    """Validate requirements.txt content."""
+def validate_requirements(content: str, *, allowed_hosts: Optional[Sequence[str]] = None) -> ValidationResult:
+    """Validate requirements.txt content.
+
+    ``allowed_hosts`` -- bare hostnames trusted in addition to the public
+    defaults (:data:`PUBLIC_INDEX_HOSTS`); any ``--index-url`` /
+    ``--extra-index-url`` host outside that union is flagged
+    ``REQ_UNTRUSTED_INDEX``. Defaults to empty.
+    """
+    trusted = PUBLIC_INDEX_HOSTS | {h.strip().lower() for h in (allowed_hosts or []) if h and h.strip()}
     r = ValidationResult()
     r.info["requirements"] = 0
     includes: list[str] = []
@@ -41,7 +49,7 @@ def validate_requirements(content: str) -> ValidationResult:
             continue
 
         if line.startswith("-"):
-            _check_option(line, i, includes, r)
+            _check_option(line, i, includes, r, trusted)
             continue
 
         if _URL_REQUIREMENT_RE.match(line):
@@ -59,7 +67,7 @@ def validate_requirements(content: str) -> ValidationResult:
     return r
 
 
-def _check_option(line: str, lineno: int, includes: list[str], r: ValidationResult) -> None:
+def _check_option(line: str, lineno: int, includes: list[str], r: ValidationResult, trusted: frozenset) -> None:
     m = _OPTION_RE.match(line)
     if not m:
         return
@@ -76,7 +84,7 @@ def _check_option(line: str, lineno: int, includes: list[str], r: ValidationResu
 
     if opt in _INDEX_OPTS:
         for url in value.split():
-            _check_index_url(url, opt, lineno, r)
+            _check_index_url(url, opt, lineno, r, trusted=trusted)
         return
 
     if opt in _INCLUDE_OPTS and value:
@@ -94,7 +102,15 @@ def _check_url_requirement(line: str, lineno: int, r: ValidationResult) -> None:
     _check_index_url(url, "url requirement", lineno, r, scheme_check=False)
 
 
-def _check_index_url(url: str, opt: str, lineno: int, r: ValidationResult, *, scheme_check: bool = True) -> None:
+def _check_index_url(
+    url: str,
+    opt: str,
+    lineno: int,
+    r: ValidationResult,
+    *,
+    scheme_check: bool = True,
+    trusted: Optional[frozenset] = None,
+) -> None:
     try:
         parts = urlsplit(url)
     except ValueError:
@@ -109,3 +125,15 @@ def _check_index_url(url: str, opt: str, lineno: int, r: ValidationResult, *, sc
             )
     if scheme_check and parts.scheme.lower() == "http":
         r.add_warning(f"{opt} over http:// ({url}) -- prefer https://", "REQ_INSECURE_INDEX", line=lineno)
+
+    # Index-trust applies only to actual index options, not editable/url
+    # requirements (scheme_check=False marks those).
+    if scheme_check and trusted is not None and parts.scheme.lower() in ("http", "https") and parts.hostname:
+        host = parts.hostname.lower()
+        if host not in trusted:
+            r.add_error(
+                f"{opt} host {host!r} is not a public index and is not allowlisted "
+                f"(add it to .dependably-check allowedRegistryHosts)",
+                "REQ_UNTRUSTED_INDEX",
+                line=lineno,
+            )

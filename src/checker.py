@@ -640,12 +640,19 @@ Examples:
         "--no-recursive", dest="recursive", action="store_false", help="Do not process directories recursively"
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
-    parser.add_argument("--version", action="version", version="python-import-checker 1.1.0")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Path to a .dependably-check config (default: discovered by walking up from the target)",
+    )
+    parser.add_argument("--version", action="version", version="python-import-checker 1.2.0")
 
     return parser
 
 
-def _run_validate(target: Path, verbose: bool) -> int:
+def _run_validate(target: Path, verbose: bool, config: Optional[Path] = None) -> int:
     """Dispatch --validate to the validators package (lazy import)."""
     try:
         from validators.runner import run_validators
@@ -653,7 +660,7 @@ def _run_validate(target: Path, verbose: bool) -> int:
         from .validators.runner import run_validators
     if verbose:
         print(f"Validating config artifacts under: {target}")
-    exit_code: int = run_validators(target)
+    exit_code: int = run_validators(target, config_path=config)
     return exit_code
 
 
@@ -688,7 +695,7 @@ def main() -> int:
         args = parser.parse_args()
 
         if args.validate:
-            return _run_validate(args.target, args.verbose)
+            return _run_validate(args.target, args.verbose, args.config)
         return _run_import_check(args)
 
     except ImportCheckerError as e:

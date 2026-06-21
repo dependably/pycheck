@@ -55,7 +55,35 @@ class TestSecurity:
         assert "REQ_INSECURE_INDEX" in _warning_codes(r)
 
     def test_security_codes_exposed(self):
-        assert SECURITY_CODES == {"REQ_PLAINTEXT_SECRET", "REQ_TRUSTED_HOST"}
+        assert SECURITY_CODES == {"REQ_PLAINTEXT_SECRET", "REQ_TRUSTED_HOST", "REQ_UNTRUSTED_INDEX"}
+
+
+class TestIndexTrust:
+    def test_private_index_url_without_allowlist_errors(self):
+        r = validate_requirements("--index-url https://nexus.corp.local/simple\n")
+        assert "REQ_UNTRUSTED_INDEX" in _error_codes(r)
+        assert r.valid is False
+
+    def test_private_index_url_with_allowlist_ok(self):
+        r = validate_requirements(
+            "--index-url https://nexus.corp.local/simple\n",
+            allowed_hosts=["nexus.corp.local"],
+        )
+        assert "REQ_UNTRUSTED_INDEX" not in _error_codes(r)
+
+    def test_extra_index_url_private_flagged(self):
+        r = validate_requirements("--extra-index-url https://mirror.example.com/simple\n")
+        assert "REQ_UNTRUSTED_INDEX" in _error_codes(r)
+
+    def test_public_index_not_flagged(self):
+        r = validate_requirements("--index-url https://pypi.org/simple\n")
+        assert "REQ_UNTRUSTED_INDEX" not in _error_codes(r)
+
+    def test_url_requirement_not_flagged_as_index(self):
+        # A direct package URL is not an index option; it must not trip the
+        # untrusted-index check.
+        r = validate_requirements("https://example.com/wheels/foo-1.0-py3-none-any.whl\n")
+        assert "REQ_UNTRUSTED_INDEX" not in _error_codes(r)
 
 
 class TestLineNumbers:

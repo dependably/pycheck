@@ -17,10 +17,14 @@ from __future__ import annotations
 import configparser
 import re
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
 from .result import ValidationResult
+
+# Hosts that are always trusted without an allowlist entry -- the public PyPI
+# index and its file-serving CDN.
+PUBLIC_INDEX_HOSTS: frozenset = frozenset({"pypi.org", "files.pythonhosted.org"})
 
 # A userinfo component that is *entirely* an env reference is safe; a partial
 # one (``real:secret${X}``) must NOT exempt the line, or a plaintext secret
@@ -28,7 +32,7 @@ from .result import ValidationResult
 ENV_REF_ONLY_RE = re.compile(r"^(\$\{[^}]+\}|%\([^)]+\)s|\$[A-Za-z_]\w*)$")
 
 # Codes that fail a run no matter how severity is configured.
-SECURITY_CODES: frozenset = frozenset({"PIP_PLAINTEXT_SECRET", "PIP_TRUSTED_HOST"})
+SECURITY_CODES: frozenset = frozenset({"PIP_PLAINTEXT_SECRET", "PIP_TRUSTED_HOST", "PIP_UNTRUSTED_INDEX"})
 
 # Recognized pip config keys -- intentionally a generous subset; unknowns only
 # warn.
@@ -72,8 +76,16 @@ KNOWN_KEYS = frozenset(
 _INDEX_KEYS = frozenset({"index-url", "extra-index-url"})
 
 
-def validate_pip_conf(content: str, *, source: str = "pip.conf") -> ValidationResult:
-    """Validate pip config INI content."""
+def validate_pip_conf(
+    content: str, *, source: str = "pip.conf", allowed_hosts: Optional[Sequence[str]] = None
+) -> ValidationResult:
+    """Validate pip config INI content.
+
+    ``allowed_hosts`` -- bare hostnames trusted in addition to the public
+    defaults (:data:`PUBLIC_INDEX_HOSTS`); any index host outside that union is
+    flagged ``PIP_UNTRUSTED_INDEX``. Defaults to empty.
+    """
+    trusted = _trusted_hosts(allowed_hosts)
     r = ValidationResult()
     parser = configparser.ConfigParser(strict=False, interpolation=None)
     try:
@@ -88,15 +100,20 @@ def validate_pip_conf(content: str, *, source: str = "pip.conf") -> ValidationRe
         for key, value in parser.items(section):
             key_l = key.strip().lower()
             ln = line_index.get((section, key_l))
-            _check_key(key_l, value, ln, r)
+            _check_key(key_l, value, ln, r, trusted)
     return r
 
 
-def _check_key(key: str, value: str, line: Optional[int], r: ValidationResult) -> None:
+def _trusted_hosts(allowed_hosts: Optional[Sequence[str]]) -> frozenset:
+    extra = {h.strip().lower() for h in (allowed_hosts or []) if h and h.strip()}
+    return PUBLIC_INDEX_HOSTS | extra
+
+
+def _check_key(key: str, value: str, line: Optional[int], r: ValidationResult, trusted: frozenset) -> None:
     if key in _INDEX_KEYS:
         # extra-index-url may carry several whitespace/newline separated URLs.
         for url in value.split():
-            _check_index_url(url, key, line, r)
+            _check_index_url(url, key, line, r, trusted)
         return
 
     if key == "trusted-host":
@@ -115,7 +132,7 @@ def _check_key(key: str, value: str, line: Optional[int], r: ValidationResult) -
         r.add_warning(f"unrecognized pip config key {key!r}", "PIP_UNKNOWN_KEY", line)
 
 
-def _check_index_url(url: str, key: str, line: Optional[int], r: ValidationResult) -> None:
+def _check_index_url(url: str, key: str, line: Optional[int], r: ValidationResult, trusted: frozenset) -> None:
     try:
         parts = urlsplit(url)
     except ValueError:
@@ -139,6 +156,17 @@ def _check_index_url(url: str, key: str, line: Optional[int], r: ValidationResul
         r.add_error(f"unsupported {key} scheme {scheme!r} in {url!r}", "PIP_INVALID_INDEX_SCHEME", line)
     elif scheme in ("http", "https") and not parts.hostname:
         r.add_error(f"invalid {key} URL (no host): {url!r}", "PIP_INVALID_INDEX", line)
+
+    # --- index host must be public or explicitly allowlisted ---
+    if scheme in ("http", "https") and parts.hostname:
+        host = parts.hostname.lower()
+        if host not in trusted:
+            r.add_error(
+                f"{key} host {host!r} is not a public index and is not allowlisted "
+                f"(add it to .dependably-check allowedRegistryHosts)",
+                "PIP_UNTRUSTED_INDEX",
+                line,
+            )
 
 
 def _is_env_ref(value: Optional[str]) -> bool:
