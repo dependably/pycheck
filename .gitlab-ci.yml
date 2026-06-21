@@ -329,6 +329,10 @@ publish-github:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
       when: manual
       allow_failure: false
+  before_script:
+    # python:3.12-slim ships without git; the runner clones via its own git, but
+    # the script below shells out to git directly, so install it here.
+    - apt-get update && apt-get install --yes --no-install-recommends git ca-certificates
   script:
     - |
       set -eu
