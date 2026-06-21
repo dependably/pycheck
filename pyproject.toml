@@ -3,14 +3,17 @@ requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "python-library-checker"
-version = "1.1.0"
+name = "python-check"
+version = "1.2.0"
 description = "A tool to analyze Python files for unused imports and optionally clean them up"
 readme = "readme.md"
 requires-python = ">=3.9"
-license = "MIT"
+license = "Apache-2.0"
 authors = [
-    {name = "Python Library Checker Project"}
+    {name = "MHiland", email = "michael@dependably.ca"}
+]
+maintainers = [
+    {name = "Dependably"}
 ]
 keywords = ["python", "imports", "static-analysis", "code-quality", "linting"]
 classifiers = [
@@ -43,9 +46,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://gitlab.northwardlabs.ca/dependably/python-check"
-"Bug Reports" = "https://gitlab.northwardlabs.ca/dependably/python-check/-/issues"
-"Source" = "https://gitlab.northwardlabs.ca/dependably/python-check"
+Homepage = "https://github.com/dependably/python-check"
+"Bug Reports" = "https://github.com/dependably/python-check/issues"
+"Source" = "https://github.com/dependably/python-check"
 
 [project.scripts]
 python-import-checker = "src.checker:main"

@@ -40,6 +40,43 @@ class TestSecurity:
         assert all("supersecret" not in str(e) for e in r.errors)
 
 
+class TestIndexTrust:
+    def test_private_index_without_allowlist_errors(self):
+        r = validate_pip_conf("[global]\nindex-url = https://nexus.corp.local/simple\n")
+        assert "PIP_UNTRUSTED_INDEX" in _error_codes(r)
+        assert r.valid is False
+
+    def test_private_index_with_allowlist_ok(self):
+        r = validate_pip_conf(
+            "[global]\nindex-url = https://nexus.corp.local/simple\n",
+            allowed_hosts=["nexus.corp.local"],
+        )
+        assert "PIP_UNTRUSTED_INDEX" not in _error_codes(r)
+        assert r.valid is True
+
+    def test_public_pypi_index_not_flagged(self):
+        r = validate_pip_conf("[global]\nindex-url = https://pypi.org/simple\n")
+        assert "PIP_UNTRUSTED_INDEX" not in _error_codes(r)
+
+    def test_public_pythonhosted_not_flagged(self):
+        r = validate_pip_conf("[global]\nextra-index-url = https://files.pythonhosted.org/simple\n")
+        assert "PIP_UNTRUSTED_INDEX" not in _error_codes(r)
+
+    def test_extra_index_url_private_flagged(self):
+        r = validate_pip_conf("[global]\nextra-index-url = https://mirror.example.com/simple\n")
+        assert "PIP_UNTRUSTED_INDEX" in _error_codes(r)
+
+    def test_allowlist_is_case_insensitive(self):
+        r = validate_pip_conf(
+            "[global]\nindex-url = https://Nexus.Corp.Local/simple\n",
+            allowed_hosts=["nexus.corp.local"],
+        )
+        assert "PIP_UNTRUSTED_INDEX" not in _error_codes(r)
+
+    def test_untrusted_index_in_security_codes(self):
+        assert "PIP_UNTRUSTED_INDEX" in SECURITY_CODES
+
+
 class TestWarnings:
     def test_http_index_is_warning(self):
         r = validate_pip_conf("[global]\nindex-url = http://pypi.example.com/simple\n")
