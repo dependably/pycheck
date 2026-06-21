@@ -7,7 +7,8 @@
 #   sbom     generate a CycloneDX SBOM (every pipeline); publish it to a
 #            Dependency-Track server on the default branch
 #   publish  manual gate that uploads the built distributions to the private
-#            registry
+#            registry; a sibling `publish-github` job mirrors the source to the
+#            public GitHub repo (re-validated by .github/workflows/ci.yml there)
 #
 # Mirrors the checker-npm / dependably-community pipelines: scanner images are
 # pinned by digest so versions can't drift; the base python image is pinned by
@@ -302,3 +303,41 @@ publish:
     - echo "Uploading $(ls dist/) to $UPLOAD_URL"
     - TWINE_USERNAME="${REGISTRY_USER:-__token__}" TWINE_PASSWORD="$REGISTRY_KEY"
       twine upload --non-interactive --repository-url "$UPLOAD_URL" dist/*
+
+# Mirror the source to the public GitHub repo (dependably/python-check). It sits
+# in the final `publish` stage with no `needs:`, so GitLab only makes it
+# available once EVERY earlier-stage job (test/build/sbom) on main has passed —
+# i.e. "only when main is green." Manual approval, default branch only,
+# serialized. Pushes this commit (and tags) to GitHub's main; the GitHub Actions
+# CI (.github/workflows/ci.yml) then re-runs trufflehog/tests/build there against
+# the public registries.
+#
+# Required CI/CD variable (Settings → CI/CD → Variables, "Masked", PROTECTED so
+# only the default branch can read it):
+#   GITHUB_TOKEN  GitHub PAT (or fine-grained token) with `contents: write` on
+#                 dependably/python-check
+publish-github:
+  stage: publish
+  interruptible: false  # don't interrupt an in-flight push
+  resource_group: publish-github
+  variables:
+    # Pristine full-history clone so the mirror push carries the complete history
+    # and tags, not a shallow build dir.
+    GIT_STRATEGY: clone
+    GIT_DEPTH: 0
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: manual
+      allow_failure: false
+  script:
+    - |
+      set -eu
+      if [ -z "${GITHUB_TOKEN:-}" ]; then
+        echo "ERROR: GITHUB_TOKEN is not set — cannot mirror to GitHub." >&2
+        exit 1
+      fi
+      git remote remove github 2>/dev/null || true
+      git remote add github "https://x-access-token:${GITHUB_TOKEN}@github.com/dependably/python-check.git"
+      echo "Mirroring $CI_COMMIT_SHORT_SHA to github.com/dependably/python-check (main)"
+      git push github "HEAD:refs/heads/$CI_DEFAULT_BRANCH"
+      git push github --tags
