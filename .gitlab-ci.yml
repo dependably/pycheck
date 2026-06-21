@@ -293,7 +293,12 @@ publish:
   before_script:
     - *registry_setup
   script:
+    # twine POSTs to this URL directly. The Dependably registry's twine-compatible
+    # upload endpoint is /pypi/legacy/ (POST to the bare host hits the SPA fallback
+    # and 405s); REGISTRY_URL is the base host shared with pip's /simple/ index, so
+    # append the upload path here (trimming any trailing slash to avoid //).
+    - UPLOAD_URL="${REGISTRY_URL%/}/pypi/legacy/"
     - python -m pip install --upgrade twine
-    - echo "Uploading $(ls dist/) to $REGISTRY_URL"
+    - echo "Uploading $(ls dist/) to $UPLOAD_URL"
     - TWINE_USERNAME="${REGISTRY_USER:-__token__}" TWINE_PASSWORD="$REGISTRY_KEY"
-      twine upload --non-interactive --repository-url "$REGISTRY_URL" dist/*
+      twine upload --non-interactive --repository-url "$UPLOAD_URL" dist/*
