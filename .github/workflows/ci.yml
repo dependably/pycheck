@@ -16,6 +16,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -102,3 +103,57 @@ jobs:
           name: dist
           path: dist/*
           retention-days: 7
+
+  # Release the wheel + sdist with signed SLSA build provenance — runs only on a
+  # `v*` tag, and only after the gating jobs pass. The attestation is generated
+  # with GitHub's keyless OIDC/sigstore flow (no stored signing key), covers the
+  # exact built dist/* bytes by digest, and is retrievable by any consumer with:
+  #   gh attestation verify <file> -R dependably/python-check
+  # This is what raises the released artifact from SLSA Build L0 to L2.
+  release:
+    needs: [secret-scan, lint, test, build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write     # create the GitHub Release + upload the dist files
+      id-token: write     # OIDC token for keyless sigstore signing
+      attestations: write # store the provenance attestation on the repo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      # Build ONCE into dist/. Every later step (attest, PyPI upload, release
+      # upload) consumes these exact bytes — nothing is rebuilt, so the provenance
+      # covers precisely what ships.
+      - run: python -m pip install --upgrade pip build twine
+      - run: python -m build
+      # Signed build provenance over the wheel + sdist, by digest. Pinned to a
+      # full commit SHA (the one third-party-style action this job adds).
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: "dist/*"
+      # Publish to PyPI. Skipped (not failed) until PYPI_API_TOKEN is set, so the
+      # provenance + GitHub Release still produce on the first tagged run.
+      - name: Publish to PyPI
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          set -eu
+          if [ -z "${PYPI_API_TOKEN:-}" ]; then
+            echo "PYPI_API_TOKEN not set — skipping PyPI upload (provenance + GitHub Release still produced)."
+            exit 0
+          fi
+          twine upload dist/* -u __token__ -p "$PYPI_API_TOKEN"
+      # Attach the attested wheel + sdist to a GitHub Release so the exact signed
+      # bytes are downloadable and verifiable by digest.
+      - name: Publish dist to the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" --generate-notes \
+          || gh release upload "$GITHUB_REF_NAME" dist/* --clobber
