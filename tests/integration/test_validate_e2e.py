@@ -1,5 +1,6 @@
 """Integration tests for the --validate mode (config artifact validation)."""
 
+import json
 import os
 import shutil
 import sys
@@ -98,3 +99,65 @@ class TestValidateViaMain:
         with patch.object(sys, "argv", ["checker.py", "--validate", str(tmp_path)]):
             assert main() != 0
         assert "no config artifacts" in capsys.readouterr().err
+
+
+class TestValidateJsonOutput:
+    """--validate --format json emits a complete, clean JSON document."""
+
+    @pytest.mark.integration
+    def test_findings_json_is_valid_and_complete(self, tmp_path, capsys):
+        # An insecure pip.conf produces both an error and a warning finding.
+        _copy("insecure_pip.conf", tmp_path, "pip.conf")
+
+        assert run_validators(tmp_path, output_format="json") == 1
+        captured = capsys.readouterr()
+
+        # stdout carries only the JSON document; status (if any) goes to stderr.
+        doc = json.loads(captured.out)
+        assert doc["mode"] == "validate"
+        assert doc["exitCode"] == 1
+        assert doc["summary"]["files"] == 1
+
+        codes = {f["code"] for f in doc["findings"]}
+        severities = {f["severity"] for f in doc["findings"]}
+        assert "error" in severities  # at least one blocking finding
+        assert doc["summary"]["errors"] >= 1
+        # Every finding carries the required machine-readable fields.
+        for f in doc["findings"]:
+            assert set(f) == {"code", "file", "line", "message", "severity"}
+            assert f["file"].endswith("pip.conf")
+            assert f["severity"] in {"error", "warning"}
+        assert codes  # non-empty
+
+    @pytest.mark.integration
+    def test_clean_json_exits_zero_no_error_findings(self, tmp_path, capsys):
+        _copy("valid_pyproject.toml", tmp_path, "pyproject.toml")
+        _copy("valid_pip.conf", tmp_path, "pip.conf")
+        _copy("valid_requirements.txt", tmp_path, "requirements.txt")
+
+        assert run_validators(tmp_path, output_format="json") == 0
+        doc = json.loads(capsys.readouterr().out)
+        assert doc["exitCode"] == 0
+        assert doc["summary"]["errors"] == 0
+        assert all(f["severity"] != "error" for f in doc["findings"])
+
+    @pytest.mark.integration
+    def test_no_artifacts_json_clean_stdout(self, tmp_path, capsys):
+        # Misconfiguration still produces a valid JSON document on stdout, while
+        # the human-readable error goes to stderr.
+        assert run_validators(tmp_path, output_format="json") == 1
+        captured = capsys.readouterr()
+        doc = json.loads(captured.out)
+        assert doc["findings"][0]["code"] == "no-artifacts"
+        assert "no config artifacts" in captured.err
+
+    @pytest.mark.integration
+    def test_main_validate_json_via_cli(self, tmp_path, capsys):
+        from unittest.mock import patch
+
+        _copy("insecure_pip.conf", tmp_path, "pip.conf")
+        with patch.object(sys, "argv", ["checker.py", "--validate", "--format", "json", str(tmp_path)]):
+            assert main() == 1
+        doc = json.loads(capsys.readouterr().out)
+        assert doc["mode"] == "validate"
+        assert len(doc["findings"]) >= 1

@@ -8,16 +8,53 @@ Supports both read-only analysis and automatic cleanup of unused imports.
 
 import argparse
 import ast
+import json
 import shutil
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+__version__ = "1.2.0"
+
+# Process exit codes, aligned with the Dependably suite convention:
+#   0 clean · 1 findings (block) · 2 usage error / operational-internal error.
+EXIT_OK = 0
+EXIT_FINDINGS = 1
+EXIT_ERROR = 2
 
 
 class ImportCheckerError(Exception):
     """Custom exception for import checker errors."""
 
     pass
+
+
+def build_json_report(
+    mode: str,
+    findings: List[Dict[str, Any]],
+    summary: Dict[str, Any],
+    exit_code: int,
+) -> Dict[str, Any]:
+    """Assemble the machine-readable result document emitted by ``--format json``.
+
+    The same findings the human output shows -- each carries a ``code``, the
+    ``file`` (artifact) it was found in, an optional 1-based ``line``, a
+    ``message`` and a ``severity`` (``error`` or ``warning``).
+    """
+    return {
+        "tool": "python-import-checker",
+        "version": __version__,
+        "mode": mode,
+        "summary": summary,
+        "findings": findings,
+        "exitCode": exit_code,
+    }
+
+
+def emit_json(report: Dict[str, Any]) -> None:
+    """Write a single JSON document to stdout (kept clean: no text mixed in)."""
+    json.dump(report, sys.stdout, indent=2, sort_keys=False)
+    sys.stdout.write("\n")
 
 
 class ImportInfo:
@@ -96,23 +133,44 @@ class _NameReferenceVisitor(ast.NodeVisitor):
 class ImportChecker:
     """Main class for handling Python import checking and cleanup."""
 
-    def __init__(self, check_mode: bool = True, verbose: bool = False):
+    def __init__(self, check_mode: bool = True, verbose: bool = False, quiet: bool = False):
         """
         Initialize the ImportChecker.
 
         Args:
             check_mode: If True, perform read-only analysis. If False, cleanup unused imports.
             verbose: Enable verbose output
+            quiet: Suppress all human-readable stdout (used by ``--format json`` so
+                stdout carries only the JSON document). Findings are still
+                collected in ``self.findings``.
         """
         self.check_mode = check_mode
         self.verbose = verbose
+        self.quiet = quiet
         self.processed_files = 0
         self.total_issues = 0
+        # Machine-readable findings, collected regardless of output format.
+        self.findings: List[Dict[str, Any]] = []
 
     def log_verbose(self, message: str) -> None:
-        """Print verbose message if verbose mode is enabled."""
-        if self.verbose:
+        """Print verbose message if verbose mode is enabled (and not quiet)."""
+        if self.verbose and not self.quiet:
             print(f"[VERBOSE] {message}")
+
+    def _record_findings(self, file_path: Path, unused_imports: List[ImportInfo]) -> None:
+        """Append one finding per unused import to the machine-readable list."""
+        for import_info in unused_imports:
+            self.findings.append(
+                {
+                    "code": "unused-import",
+                    "file": str(file_path),
+                    "line": import_info.line_number,
+                    "message": f"unused import: {self._format_import(import_info)}",
+                    # Unused imports block the gate (exit 1) in check mode, so they
+                    # are reported as errors, mirroring the validator severity model.
+                    "severity": "error",
+                }
+            )
 
     def extract_imports_from_ast(self, tree: ast.AST) -> List[ImportInfo]:
         """
@@ -414,6 +472,8 @@ class ImportChecker:
 
     def _report_check(self, file_path: Path, used_imports: List[ImportInfo], unused_imports: List[ImportInfo]) -> None:
         """Print read-only analysis results for one file."""
+        if self.quiet:
+            return
         print(f"Analyzing: {file_path}")
         if unused_imports:
             print(f"  Found {len(unused_imports)} unused import(s):")
@@ -429,12 +489,15 @@ class ImportChecker:
 
     def _report_cleanup(self, file_path: Path, content: str, unused_imports: List[ImportInfo]) -> None:
         """Remove unused imports from a file (with backup) and print results."""
-        print(f"Cleaning: {file_path}")
+        if not self.quiet:
+            print(f"Cleaning: {file_path}")
         if not unused_imports:
-            print("  No unused imports to remove")
+            if not self.quiet:
+                print("  No unused imports to remove")
             return
 
-        print(f"  Removing {len(unused_imports)} unused import(s)")
+        if not self.quiet:
+            print(f"  Removing {len(unused_imports)} unused import(s)")
 
         # Create a backup before modifying.
         backup_path = file_path.with_suffix(file_path.suffix + ".backup")
@@ -445,10 +508,11 @@ class ImportChecker:
         with open(file_path, "w", encoding="utf-8") as file:
             file.write(modified_content)
 
-        print("  Removed imports:")
-        for import_info in unused_imports:
-            print(f"    Line {import_info.line_number}: {self._format_import(import_info)}")
-        print(f"  Backup saved as: {backup_path}")
+        if not self.quiet:
+            print("  Removed imports:")
+            for import_info in unused_imports:
+                print(f"    Line {import_info.line_number}: {self._format_import(import_info)}")
+            print(f"  Backup saved as: {backup_path}")
 
     def process_file(self, file_path: Path) -> None:
         """
@@ -485,6 +549,7 @@ class ImportChecker:
 
             self.processed_files += 1
             self.total_issues += len(unused_imports)
+            self._record_findings(file_path, unused_imports)
 
             if self.check_mode:
                 self._report_check(file_path, used_imports, unused_imports)
@@ -523,7 +588,8 @@ class ImportChecker:
             python_files = list(directory_path.glob(pattern))
 
             if not python_files:
-                print(f"No Python files found in: {directory_path}")
+                if not self.quiet:
+                    print(f"No Python files found in: {directory_path}")
                 return
 
             self.log_verbose(f"Found {len(python_files)} Python files")
@@ -559,10 +625,11 @@ class ImportChecker:
                 raise ImportCheckerError(f"Target path does not exist: {target_path}")
 
             # Print summary
-            mode_str = "Analysis" if self.check_mode else "Cleanup"
-            print(f"\n{mode_str} complete:")
-            print(f"  Files processed: {self.processed_files}")
-            print(f"  Issues found: {self.total_issues}")
+            if not self.quiet:
+                mode_str = "Analysis" if self.check_mode else "Cleanup"
+                print(f"\n{mode_str} complete:")
+                print(f"  Files processed: {self.processed_files}")
+                print(f"  Issues found: {self.total_issues}")
 
         except ImportCheckerError:
             raise
@@ -641,46 +708,71 @@ Examples:
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
     parser.add_argument(
+        "--format",
+        choices=["human", "json"],
+        default="human",
+        help=(
+            "Output format (default: human). 'json' emits a single machine-readable "
+            "JSON document to stdout with the full set of findings; stdout is kept "
+            "clean (status/progress is routed to stderr)."
+        ),
+    )
+    parser.add_argument(
         "--config",
         type=Path,
         default=None,
         metavar="PATH",
         help="Path to a .dependably-check config (default: discovered by walking up from the target)",
     )
-    parser.add_argument("--version", action="version", version="python-import-checker 1.2.0")
+    parser.add_argument("--version", action="version", version=f"python-import-checker {__version__}")
 
     return parser
 
 
-def _run_validate(target: Path, verbose: bool, config: Optional[Path] = None) -> int:
+def _run_validate(target: Path, verbose: bool, config: Optional[Path] = None, output_format: str = "human") -> int:
     """Dispatch --validate to the validators package (lazy import)."""
     try:
         from validators.runner import run_validators
     except ImportError:  # installed wheel (src.validators)
         from .validators.runner import run_validators
     if verbose:
-        print(f"Validating config artifacts under: {target}")
-    exit_code: int = run_validators(target, config_path=config)
+        # In json mode keep stdout clean; status goes to stderr.
+        stream = sys.stderr if output_format == "json" else sys.stdout
+        print(f"Validating config artifacts under: {target}", file=stream)
+    exit_code: int = run_validators(target, config_path=config, output_format=output_format)
     return exit_code
 
 
 def _run_import_check(args: argparse.Namespace) -> int:
     """Run the AST import checker in --check or --cleanup mode."""
     check_mode = args.check
+    json_mode = args.format == "json"
     if args.verbose:
         mode_str = "check" if check_mode else "cleanup"
-        print(f"Running in {mode_str} mode on: {args.target}")
-        print(f"Recursive: {args.recursive}")
+        # Route status to stderr in json mode so stdout carries only the document.
+        stream = sys.stderr if json_mode else sys.stdout
+        print(f"Running in {mode_str} mode on: {args.target}", file=stream)
+        print(f"Recursive: {args.recursive}", file=stream)
 
-    checker = ImportChecker(check_mode=check_mode, verbose=args.verbose)
+    checker = ImportChecker(check_mode=check_mode, verbose=args.verbose, quiet=json_mode)
     checker.run(target_path=args.target, recursive=args.recursive)
 
     # In check mode, exit non-zero when unused imports are found so the tool can
     # gate CI / git hooks (linter convention). Cleanup mode returns 0 — it has
     # already removed them.
-    if check_mode and checker.total_issues > 0:
-        return 1
-    return 0
+    exit_code = EXIT_FINDINGS if (check_mode and checker.total_issues > 0) else EXIT_OK
+
+    if json_mode:
+        summary = {
+            "files": checker.processed_files,
+            "errors": len(checker.findings),
+            "warnings": 0,
+            "skipped": 0,
+        }
+        mode = "check" if check_mode else "cleanup"
+        emit_json(build_json_report(mode, checker.findings, summary, exit_code))
+
+    return exit_code
 
 
 def main() -> int:
@@ -688,25 +780,27 @@ def main() -> int:
     Main entry point for the CLI application.
 
     Returns:
-        Exit code (0 for success, 1 for error)
+        Exit code: 0 clean, 1 findings (block), 2 usage/operational error.
     """
     try:
         parser = setup_argument_parser()
         args = parser.parse_args()
 
         if args.validate:
-            return _run_validate(args.target, args.verbose, args.config)
+            return _run_validate(args.target, args.verbose, args.config, args.format)
         return _run_import_check(args)
 
+    # Operational / internal errors are NOT findings: per the suite convention
+    # exit 1 is reserved for findings (block), so these exit 2.
     except ImportCheckerError as e:
         print(f"Error: {e}", file=sys.stderr)
-        return 1
+        return EXIT_ERROR
     except KeyboardInterrupt:
         print("\nOperation cancelled by user", file=sys.stderr)
-        return 1
+        return EXIT_ERROR
     except Exception as e:
         print(f"Unexpected error: {e}", file=sys.stderr)
-        return 1
+        return EXIT_ERROR
 
 
 if __name__ == "__main__":

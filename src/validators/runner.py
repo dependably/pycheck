@@ -10,13 +10,21 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .config import resolve_allowed_hosts
 from .pip_conf_validator import validate_pip_conf
 from .pyproject_validator import validate_pyproject
 from .requirements_validator import validate_requirements
 from .result import ValidationResult
+
+# The JSON document is assembled with the shared helpers from ``checker`` so the
+# shape matches the import-checker's json output. Flat layout (tests put ``src/``
+# on sys.path) exposes them as ``checker``; the installed wheel as ``src.checker``.
+try:  # pragma: no cover - import shim
+    from checker import build_json_report, emit_json
+except ImportError:  # pragma: no cover - import shim
+    from ..checker import build_json_report, emit_json
 
 # Validator signature: takes file text, returns a ValidationResult.
 _Validator = Callable[[str], ValidationResult]
@@ -50,6 +58,7 @@ def run_validators(
     *,
     allowed_hosts: Optional[Sequence[str]] = None,
     config_path: Optional[Path] = None,
+    output_format: str = "human",
 ) -> int:
     """Validate every discovered artifact and print a report. Returns exit code.
 
@@ -57,23 +66,65 @@ def run_validators(
     validators. When ``None`` they are resolved from the shared
     ``.dependably-check`` config (an explicit ``config_path``, else discovery by
     walking up from ``target``).
+
+    ``output_format`` -- ``"human"`` (default) prints the text report to stdout;
+    ``"json"`` emits a single machine-readable JSON document to stdout (kept
+    clean) carrying the full set of findings, while status messages go to stderr.
     """
     target = Path(target)
+    json_mode = output_format == "json"
     if allowed_hosts is None:
         allowed_hosts = resolve_allowed_hosts(target, config_path)
     files = discover_config_files(target)
 
     if not files:
-        # Validating nothing is NOT a pass: pointing at the wrong directory or a
-        # misnamed manifest must be distinguishable from "scanned and clean".
-        # Exit non-zero (through the tool's error path) so CI / hooks catch it.
-        print(
-            "Error: no config artifacts (pyproject.toml, pip.conf, requirements*.txt) "
-            f"found to validate at: {target}",
-            file=sys.stderr,
-        )
-        return 1
+        return _report_no_artifacts(target, json_mode)
 
+    findings, total_errors, total_warnings, total_skipped = _collect_results(files, allowed_hosts, json_mode)
+
+    if not json_mode:
+        print(
+            f"\nValidation complete: {len(files)} file(s), {total_errors} error(s), "
+            f"{total_warnings} warning(s), {total_skipped} skipped"
+        )
+
+    exit_code = _resolve_exit_code(target, len(files), total_errors, total_skipped, findings, json_mode)
+
+    if json_mode:
+        summary = {
+            "files": len(files),
+            "errors": total_errors,
+            "warnings": total_warnings,
+            "skipped": total_skipped,
+        }
+        emit_json(build_json_report("validate", findings, summary, exit_code))
+
+    return exit_code
+
+
+def _report_no_artifacts(target: Path, json_mode: bool) -> int:
+    """Validating nothing is NOT a pass: report the misconfiguration, exit 1.
+
+    Pointing at the wrong directory or a misnamed manifest must be
+    distinguishable from "scanned and clean", so this exits non-zero (the
+    tool's error path) for CI / hooks to catch.
+    """
+    message = "no config artifacts (pyproject.toml, pip.conf, requirements*.txt) found to validate"
+    print(f"Error: {message} at: {target}", file=sys.stderr)
+    if json_mode:
+        finding = {"code": "no-artifacts", "file": str(target), "line": None, "message": message, "severity": "error"}
+        summary = {"files": 0, "errors": 1, "warnings": 0, "skipped": 0}
+        emit_json(build_json_report("validate", [finding], summary, 1))
+    return 1
+
+
+def _collect_results(
+    files: List[Tuple[Path, _Validator]],
+    allowed_hosts: Sequence[str],
+    json_mode: bool,
+) -> Tuple[List[Dict[str, Any]], int, int, int]:
+    """Validate each artifact; return (findings, errors, warnings, skipped)."""
+    findings: List[Dict[str, Any]] = []
     total_errors = 0
     total_warnings = 0
     total_skipped = 0
@@ -82,8 +133,18 @@ def run_validators(
         try:
             content = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as e:
-            print(f"Validating: {path}")
-            print(f"  could not read file: {e}")
+            if not json_mode:
+                print(f"Validating: {path}")
+                print(f"  could not read file: {e}")
+            findings.append(
+                {
+                    "code": "unreadable-file",
+                    "file": str(path),
+                    "line": None,
+                    "message": f"could not read file: {e}",
+                    "severity": "error",
+                }
+            )
             total_errors += 1
             continue
 
@@ -92,26 +153,82 @@ def run_validators(
             total_skipped += 1
         total_errors += len(result.errors)
         total_warnings += len(result.warnings)
-        _print_result(path, result)
+        findings.extend(_result_findings(path, result))
+        if not json_mode:
+            _print_result(path, result)
 
-    print(
-        f"\nValidation complete: {len(files)} file(s), {total_errors} error(s), "
-        f"{total_warnings} warning(s), {total_skipped} skipped"
-    )
+    return findings, total_errors, total_warnings, total_skipped
 
+
+def _resolve_exit_code(
+    target: Path,
+    file_count: int,
+    total_errors: int,
+    total_skipped: int,
+    findings: List[Dict[str, Any]],
+    json_mode: bool,
+) -> int:
+    """Derive the process exit code (and report the all-skipped failure class).
+
+    Every discovered artifact being skipped (e.g. tomllib/tomli unavailable on
+    Python < 3.11) means nothing was actually validated -- the same failure
+    class as finding no artifacts at all, so it is non-zero, not a pass.
+    """
     if total_errors:
         return 1
-    # Every discovered artifact was skipped (e.g. tomllib/tomli unavailable on
-    # Python < 3.11): nothing was actually validated, so this is not a pass
-    # either -- same failure class as finding no artifacts at all.
-    if total_skipped == len(files):
-        print(
-            f"Error: all {len(files)} discovered config artifact(s) were skipped "
-            f"(validator unavailable); nothing was actually validated at: {target}",
-            file=sys.stderr,
+    if total_skipped != file_count:
+        return 0
+
+    message = (
+        f"all {file_count} discovered config artifact(s) were skipped "
+        "(validator unavailable); nothing was actually validated"
+    )
+    print(f"Error: {message} at: {target}", file=sys.stderr)
+    if json_mode:
+        findings.append(
+            {"code": "all-skipped", "file": str(target), "line": None, "message": message, "severity": "error"}
         )
-        return 1
-    return 0
+    return 1
+
+
+def _result_findings(path: Path, result: ValidationResult) -> List[Dict[str, Any]]:
+    """Flatten one ``ValidationResult`` into machine-readable finding dicts.
+
+    Skipped artifacts produce a single ``skipped-artifact`` warning so the json
+    consumer sees the same information the human ``Skipped: ...`` line conveys.
+    """
+    if result.info.get("skipped"):
+        return [
+            {
+                "code": "skipped-artifact",
+                "file": str(path),
+                "line": None,
+                "message": str(result.info.get("reason", "validation unavailable")),
+                "severity": "warning",
+            }
+        ]
+    out: List[Dict[str, Any]] = []
+    for err in result.errors:
+        out.append(
+            {
+                "code": err.code,
+                "file": str(path),
+                "line": err.line,
+                "message": str(err),
+                "severity": "error",
+            }
+        )
+    for warn in result.warnings:
+        out.append(
+            {
+                "code": warn.code,
+                "file": str(path),
+                "line": warn.line,
+                "message": warn.message,
+                "severity": "warning",
+            }
+        )
+    return out
 
 
 def _invoke(validator: _Validator, content: str, allowed_hosts: Sequence[str]) -> ValidationResult:

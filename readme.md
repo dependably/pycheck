@@ -73,10 +73,38 @@ python src/checker.py [--check | --cleanup | --validate] target [options]
 - `--recursive`: Process directories recursively (default: True)
 - `--no-recursive`: Process only the specified directory level
 - `--verbose`, `-v`: Enable detailed output
+- `--format {human,json}`: Output format (default: `human`). `json` emits a single
+  machine-readable JSON document to stdout with the full set of findings; stdout
+  is kept clean (status/progress is routed to stderr). Works in all modes.
 - `--config <path>`: Path to a `.dependably-check` config (validate mode). When
   omitted, the file is discovered by walking up from the target to the repo root.
 - `--version`: Show version information
 - `--help`: Display help message
+
+### Output format and exit codes
+
+With `--format json` the tool writes one JSON document to stdout:
+
+```json
+{
+  "tool": "python-import-checker",
+  "version": "1.2.0",
+  "mode": "check",
+  "summary": { "files": 1, "errors": 1, "warnings": 0, "skipped": 0 },
+  "findings": [
+    { "code": "unused-import", "file": "x.py", "line": 2,
+      "message": "unused import: import sys", "severity": "error" }
+  ],
+  "exitCode": 1
+}
+```
+
+Each finding carries a `code`, the `file` it was found in, an optional 1-based
+`line`, a `message`, and a `severity` (`error` or `warning`).
+
+Exit codes follow the Dependably suite convention: `0` clean, `1` findings
+(blocking), `2` usage error or operational/internal error; `--help` and
+`--version` exit `0`.
 
 ### Validate mode and `.dependably-check`
 
