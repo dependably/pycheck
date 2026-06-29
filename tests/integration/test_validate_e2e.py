@@ -54,7 +54,8 @@ class TestRunValidators:
     def test_no_artifacts_exits_nonzero(self, tmp_path, capsys):
         # Validating nothing must not report success: an empty target is a
         # misconfiguration (wrong dir / misnamed manifest), not a clean pass.
-        assert run_validators(tmp_path) != 0
+        # It's an operational error (nothing validated), so exit 2 — not 1 (a finding).
+        assert run_validators(tmp_path) == 2
         err = capsys.readouterr().err
         assert "no config artifacts" in err
         assert "found to validate at" in err
@@ -67,7 +68,8 @@ class TestRunValidators:
 
         monkeypatch.setattr(pyproject_validator, "tomllib", None)
         _copy("valid_pyproject.toml", tmp_path, "pyproject.toml")
-        assert run_validators(tmp_path) != 0
+        # All-skipped == nothing validated == operational error -> exit 2.
+        assert run_validators(tmp_path) == 2
         assert "skipped" in capsys.readouterr().err
 
 
@@ -97,7 +99,7 @@ class TestValidateViaMain:
         from unittest.mock import patch
 
         with patch.object(sys, "argv", ["checker.py", "--validate", str(tmp_path)]):
-            assert main() != 0
+            assert main() == 2  # operational error (nothing to validate), not a finding
         assert "no config artifacts" in capsys.readouterr().err
 
 
@@ -149,11 +151,12 @@ class TestValidateJsonOutput:
     @pytest.mark.integration
     def test_no_artifacts_json_clean_stdout(self, tmp_path, capsys):
         # Misconfiguration still produces a valid JSON document on stdout, while
-        # the human-readable error goes to stderr.
-        assert run_validators(tmp_path, output_format="json") == 1
+        # the human-readable error goes to stderr. Operational error -> exit 2.
+        assert run_validators(tmp_path, output_format="json") == 2
         captured = capsys.readouterr()
         doc = json.loads(captured.out)
         assert doc["findings"][0]["ruleId"] == "no-artifacts"
+        assert doc["summary"]["exitCode"] == 2
         assert doc["summary"]["scanned"] == 0
         assert "no config artifacts" in captured.err
 

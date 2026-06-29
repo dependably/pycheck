@@ -3,7 +3,9 @@
 ``run_validators`` is the entry point used by ``checker.py``'s ``--validate``
 mode: it discovers ``pyproject.toml`` / ``pip.conf`` / ``requirements*.txt``
 under the target, validates each, prints a per-file report, and returns a
-process exit code (0 = no errors anywhere, 1 = at least one error).
+process exit code per the suite convention: 0 = nothing to report, 1 = a
+validation error (a finding), 2 = operational error — nothing could be
+validated at all (no artifacts found, or every artifact skipped).
 """
 
 from __future__ import annotations
@@ -107,18 +109,19 @@ def run_validators(
 
 
 def _report_no_artifacts(target: Path, json_mode: bool) -> int:
-    """Validating nothing is NOT a pass: report the misconfiguration, exit 1.
+    """Validating nothing is NOT a pass: report the misconfiguration, exit 2.
 
     Pointing at the wrong directory or a misnamed manifest must be
-    distinguishable from "scanned and clean", so this exits non-zero (the
-    tool's error path) for CI / hooks to catch.
+    distinguishable from "scanned and clean". This is an OPERATIONAL error
+    (nothing could be validated), not a finding, so per the suite convention it
+    is exit 2 (not 1) -- still non-zero, so CI / hooks catch it.
     """
     message = "no config artifacts (pyproject.toml, pip.conf, requirements*.txt) found to validate"
     print(f"Error: {message} at: {target}", file=sys.stderr)
     if json_mode:
         finding = {"code": "no-artifacts", "file": str(target), "line": None, "message": message, "severity": "error"}
-        emit_json(build_json_report(target, 0, [finding], "config", 1))
-    return 1
+        emit_json(build_json_report(target, 0, [finding], "config", 2))
+    return 2
 
 
 def _collect_results(
@@ -174,8 +177,9 @@ def _resolve_exit_code(
     """Derive the process exit code (and report the all-skipped failure class).
 
     Every discovered artifact being skipped (e.g. tomllib/tomli unavailable on
-    Python < 3.11) means nothing was actually validated -- the same failure
-    class as finding no artifacts at all, so it is non-zero, not a pass.
+    Python < 3.11) means nothing was actually validated -- the same operational
+    failure class as finding no artifacts at all, so it is exit 2 (operational
+    error), not 1 (a finding) and not 0 (a pass).
     """
     if total_errors:
         return 1
@@ -191,7 +195,7 @@ def _resolve_exit_code(
         findings.append(
             {"code": "all-skipped", "file": str(target), "line": None, "message": message, "severity": "error"}
         )
-    return 1
+    return 2
 
 
 def _result_findings(path: Path, result: ValidationResult) -> List[Dict[str, Any]]:
