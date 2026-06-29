@@ -8,6 +8,7 @@ process exit code (0 = no errors anywhere, 1 = at least one error).
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Tuple
 
@@ -63,11 +64,19 @@ def run_validators(
     files = discover_config_files(target)
 
     if not files:
-        print(f"No config artifacts (pyproject.toml, pip.conf, requirements*.txt) found under: {target}")
-        return 0
+        # Validating nothing is NOT a pass: pointing at the wrong directory or a
+        # misnamed manifest must be distinguishable from "scanned and clean".
+        # Exit non-zero (through the tool's error path) so CI / hooks catch it.
+        print(
+            "Error: no config artifacts (pyproject.toml, pip.conf, requirements*.txt) "
+            f"found to validate at: {target}",
+            file=sys.stderr,
+        )
+        return 1
 
     total_errors = 0
     total_warnings = 0
+    total_skipped = 0
 
     for path, validator in files:
         try:
@@ -79,12 +88,30 @@ def run_validators(
             continue
 
         result = _invoke(validator, content, allowed_hosts)
+        if result.info.get("skipped"):
+            total_skipped += 1
         total_errors += len(result.errors)
         total_warnings += len(result.warnings)
         _print_result(path, result)
 
-    print(f"\nValidation complete: {len(files)} file(s), {total_errors} error(s), {total_warnings} warning(s)")
-    return 1 if total_errors else 0
+    print(
+        f"\nValidation complete: {len(files)} file(s), {total_errors} error(s), "
+        f"{total_warnings} warning(s), {total_skipped} skipped"
+    )
+
+    if total_errors:
+        return 1
+    # Every discovered artifact was skipped (e.g. tomllib/tomli unavailable on
+    # Python < 3.11): nothing was actually validated, so this is not a pass
+    # either -- same failure class as finding no artifacts at all.
+    if total_skipped == len(files):
+        print(
+            f"Error: all {len(files)} discovered config artifact(s) were skipped "
+            f"(validator unavailable); nothing was actually validated at: {target}",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 def _invoke(validator: _Validator, content: str, allowed_hosts: Sequence[str]) -> ValidationResult:
