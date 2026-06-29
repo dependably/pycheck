@@ -264,7 +264,7 @@ sbom-publish:
       set -eu
       BASE="${dependencyTrack_url%/}"
       PROJECT=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['name'])")
-      VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+      VERSION=latest
       echo "Publishing SBOM for $PROJECT@$VERSION to $BASE"
       status=$(curl -sS -o /tmp/bom.out -w '%{http_code}' \
         -X POST "$BASE/api/v1/bom" \
