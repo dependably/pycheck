@@ -114,20 +114,25 @@ class TestValidateJsonOutput:
 
         # stdout carries only the JSON document; status (if any) goes to stderr.
         doc = json.loads(captured.out)
-        assert doc["mode"] == "validate"
-        assert doc["exitCode"] == 1
-        assert doc["summary"]["files"] == 1
+        # Shared Dependably finding envelope (schema v1).
+        assert doc["tool"] == "python-check"
+        assert doc["schemaVersion"] == "1.0"
+        assert doc["summary"]["exitCode"] == 1
+        assert doc["summary"]["scanned"] == 1
+        assert doc["summary"]["findings"] == len(doc["findings"])
 
-        codes = {f["code"] for f in doc["findings"]}
+        rule_ids = {f["ruleId"] for f in doc["findings"]}
         severities = {f["severity"] for f in doc["findings"]}
-        assert "error" in severities  # at least one blocking finding
-        assert doc["summary"]["errors"] >= 1
-        # Every finding carries the required machine-readable fields.
+        assert "high" in severities  # at least one blocking finding (error -> high)
+        assert doc["summary"]["bySeverity"]["high"] >= 1
+        # Every finding carries the required shared-schema fields.
         for f in doc["findings"]:
-            assert set(f) == {"code", "file", "line", "message", "severity"}
-            assert f["file"].endswith("pip.conf")
-            assert f["severity"] in {"error", "warning"}
-        assert codes  # non-empty
+            assert set(f) == {"severity", "ruleId", "category", "message", "location", "remediation"}
+            assert f["category"] == "config"
+            assert f["location"]["file"].endswith("pip.conf")
+            assert set(f["location"]) == {"file", "line", "column"}
+            assert f["severity"] in {"high", "low"}
+        assert rule_ids  # non-empty
 
     @pytest.mark.integration
     def test_clean_json_exits_zero_no_error_findings(self, tmp_path, capsys):
@@ -137,9 +142,9 @@ class TestValidateJsonOutput:
 
         assert run_validators(tmp_path, output_format="json") == 0
         doc = json.loads(capsys.readouterr().out)
-        assert doc["exitCode"] == 0
-        assert doc["summary"]["errors"] == 0
-        assert all(f["severity"] != "error" for f in doc["findings"])
+        assert doc["summary"]["exitCode"] == 0
+        assert doc["summary"]["bySeverity"]["high"] == 0
+        assert all(f["severity"] != "high" for f in doc["findings"])
 
     @pytest.mark.integration
     def test_no_artifacts_json_clean_stdout(self, tmp_path, capsys):
@@ -148,7 +153,8 @@ class TestValidateJsonOutput:
         assert run_validators(tmp_path, output_format="json") == 1
         captured = capsys.readouterr()
         doc = json.loads(captured.out)
-        assert doc["findings"][0]["code"] == "no-artifacts"
+        assert doc["findings"][0]["ruleId"] == "no-artifacts"
+        assert doc["summary"]["scanned"] == 0
         assert "no config artifacts" in captured.err
 
     @pytest.mark.integration
@@ -159,5 +165,5 @@ class TestValidateJsonOutput:
         with patch.object(sys, "argv", ["checker.py", "--validate", "--format", "json", str(tmp_path)]):
             assert main() == 1
         doc = json.loads(capsys.readouterr().out)
-        assert doc["mode"] == "validate"
+        assert doc["tool"] == "python-check"
         assert len(doc["findings"]) >= 1

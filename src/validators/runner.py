@@ -91,13 +91,7 @@ def run_validators(
     exit_code = _resolve_exit_code(target, len(files), total_errors, total_skipped, findings, json_mode)
 
     if json_mode:
-        summary = {
-            "files": len(files),
-            "errors": total_errors,
-            "warnings": total_warnings,
-            "skipped": total_skipped,
-        }
-        emit_json(build_json_report("validate", findings, summary, exit_code))
+        emit_json(build_json_report(target, len(files), findings, "config", exit_code))
 
     return exit_code
 
@@ -113,8 +107,7 @@ def _report_no_artifacts(target: Path, json_mode: bool) -> int:
     print(f"Error: {message} at: {target}", file=sys.stderr)
     if json_mode:
         finding = {"code": "no-artifacts", "file": str(target), "line": None, "message": message, "severity": "error"}
-        summary = {"files": 0, "errors": 1, "warnings": 0, "skipped": 0}
-        emit_json(build_json_report("validate", [finding], summary, 1))
+        emit_json(build_json_report(target, 0, [finding], "config", 1))
     return 1
 
 

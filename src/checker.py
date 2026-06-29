@@ -29,25 +29,78 @@ class ImportCheckerError(Exception):
     pass
 
 
+# Identity reported in the shared Dependably finding JSON envelope (schema v1).
+TOOL_NAME = "python-check"
+SCHEMA_VERSION = "1.0"
+
+# python-check's internal severities map onto the single shared ladder
+# (critical > high > moderate > low > info). error->high, warning->low.
+_SEVERITY_LADDER: Dict[str, str] = {"error": "high", "warning": "low"}
+
+# Short, optional remediation hints keyed by ruleId. Anything absent -> null.
+_REMEDIATION: Dict[str, str] = {
+    "unused-import": "Remove the unused import.",
+}
+
+
+def _to_finding(raw: Dict[str, Any], category: str) -> Dict[str, Any]:
+    """Map an internal finding dict to the shared schema-v1 ``Finding`` shape.
+
+    Internal findings carry ``code`` / ``file`` / ``line`` / ``message`` /
+    ``severity`` (``error``|``warning``); the shared shape uses ``ruleId``,
+    ``category``, a ``location`` object, a ladder ``severity`` string and an
+    optional ``remediation``.
+    """
+    rule_id = raw.get("code")
+    return {
+        "severity": _SEVERITY_LADDER.get(str(raw.get("severity")), "info"),
+        "ruleId": rule_id,
+        "category": category,
+        "message": raw.get("message", ""),
+        "location": {
+            "file": raw.get("file"),
+            "line": raw.get("line"),
+            "column": None,
+        },
+        "remediation": _REMEDIATION.get(str(rule_id)),
+    }
+
+
 def build_json_report(
-    mode: str,
-    findings: List[Dict[str, Any]],
-    summary: Dict[str, Any],
+    target: Any,
+    scanned: int,
+    raw_findings: List[Dict[str, Any]],
+    category: str,
     exit_code: int,
 ) -> Dict[str, Any]:
-    """Assemble the machine-readable result document emitted by ``--format json``.
+    """Assemble the shared Dependably finding JSON envelope (schema v1).
 
-    The same findings the human output shows -- each carries a ``code``, the
-    ``file`` (artifact) it was found in, an optional 1-based ``line``, a
-    ``message`` and a ``severity`` (``error`` or ``warning``).
+    Every Dependably tool emits this exact envelope so a single consumer parses
+    all of them the same way: ``tool`` / ``toolVersion`` / ``schemaVersion`` /
+    ``target`` / ``summary`` / ``findings``. ``raw_findings`` (internal shape)
+    are mapped to the shared ``Finding`` shape under ``category`` (``lint`` for
+    import findings, ``config`` for config-validation findings).
+
+    ``summary.scanned`` is the number of files/artifacts examined,
+    ``summary.findings`` always equals ``len(findings)`` (never truncated), and
+    ``summary.exitCode`` equals the real process exit code.
     """
+    findings = [_to_finding(raw, category) for raw in raw_findings]
+    by_severity = {"critical": 0, "high": 0, "moderate": 0, "low": 0, "info": 0}
+    for finding in findings:
+        by_severity[finding["severity"]] += 1
     return {
-        "tool": "python-import-checker",
-        "version": __version__,
-        "mode": mode,
-        "summary": summary,
+        "tool": TOOL_NAME,
+        "toolVersion": __version__,
+        "schemaVersion": SCHEMA_VERSION,
+        "target": str(target),
+        "summary": {
+            "scanned": scanned,
+            "findings": len(findings),
+            "bySeverity": by_severity,
+            "exitCode": exit_code,
+        },
         "findings": findings,
-        "exitCode": exit_code,
     }
 
 
@@ -763,14 +816,15 @@ def _run_import_check(args: argparse.Namespace) -> int:
     exit_code = EXIT_FINDINGS if (check_mode and checker.total_issues > 0) else EXIT_OK
 
     if json_mode:
-        summary = {
-            "files": checker.processed_files,
-            "errors": len(checker.findings),
-            "warnings": 0,
-            "skipped": 0,
-        }
-        mode = "check" if check_mode else "cleanup"
-        emit_json(build_json_report(mode, checker.findings, summary, exit_code))
+        emit_json(
+            build_json_report(
+                target=args.target,
+                scanned=checker.processed_files,
+                raw_findings=checker.findings,
+                category="lint",
+                exit_code=exit_code,
+            )
+        )
 
     return exit_code
 
