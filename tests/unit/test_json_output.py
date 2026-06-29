@@ -60,7 +60,7 @@ class TestCheckJsonOutput:
 
         assert code == 1
         # Shared Dependably finding envelope (schema v1).
-        assert doc["tool"] == "python-check"
+        assert doc["tool"] == "Dependably.pycheck"
         assert doc["schemaVersion"] == "1.0"
         assert isinstance(doc["toolVersion"], str) and doc["toolVersion"]
         assert doc["target"] == str(f)

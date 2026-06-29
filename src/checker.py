@@ -30,7 +30,7 @@ class ImportCheckerError(Exception):
 
 
 # Identity reported in the shared Dependably finding JSON envelope (schema v1).
-TOOL_NAME = "python-check"
+TOOL_NAME = "Dependably.pycheck"
 SCHEMA_VERSION = "1.0"
 
 # python-check's internal severities map onto the single shared ladder
