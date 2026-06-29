@@ -3,7 +3,7 @@ requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "python-check"
+name = "Dependably.pycheck"
 version = "1.2.0"
 description = "A tool to analyze Python files for unused imports and optionally clean them up"
 readme = "readme.md"

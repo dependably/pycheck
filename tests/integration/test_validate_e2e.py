@@ -115,7 +115,7 @@ class TestValidateJsonOutput:
         # stdout carries only the JSON document; status (if any) goes to stderr.
         doc = json.loads(captured.out)
         # Shared Dependably finding envelope (schema v1).
-        assert doc["tool"] == "python-check"
+        assert doc["tool"] == "Dependably.pycheck"
         assert doc["schemaVersion"] == "1.0"
         assert doc["summary"]["exitCode"] == 1
         assert doc["summary"]["scanned"] == 1
@@ -165,5 +165,5 @@ class TestValidateJsonOutput:
         with patch.object(sys, "argv", ["checker.py", "--validate", "--format", "json", str(tmp_path)]):
             assert main() == 1
         doc = json.loads(capsys.readouterr().out)
-        assert doc["tool"] == "python-check"
+        assert doc["tool"] == "Dependably.pycheck"
         assert len(doc["findings"]) >= 1
