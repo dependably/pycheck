@@ -10,7 +10,14 @@ from unittest.mock import patch, MagicMock
 # Add src directory to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
-from checker import setup_argument_parser, validate_target_path, main, ImportCheckerError
+from checker import (
+    setup_argument_parser,
+    validate_target_path,
+    main,
+    ImportCheckerError,
+    parse_fail_on,
+    gate_trips,
+)
 
 
 class TestValidateTargetPath:
@@ -121,12 +128,22 @@ class TestSetupArgumentParser:
             self.parser.parse_args([str(test_file)])
 
     def test_recursive_default(self, tmp_path):
-        """Test that recursive is True by default."""
+        """Test that recursive is True by default (no --recursive flag needed)."""
         test_file = tmp_path / "test.py"
         test_file.write_text("import os")
 
         args = self.parser.parse_args(["--check", str(test_file)])
         assert args.recursive is True
+
+    def test_recursive_flag_removed(self, tmp_path):
+        """The dead --recursive flag is gone (it was a no-op default=True)."""
+        test_file = tmp_path / "test.py"
+        test_file.write_text("import os")
+
+        with pytest.raises(SystemExit) as excinfo:
+            self.parser.parse_args(["--check", "--recursive", str(test_file)])
+        # argparse rejects unknown options with exit code 2.
+        assert excinfo.value.code == 2
 
     def test_no_recursive_argument(self, tmp_path):
         """Test --no-recursive argument."""
@@ -240,7 +257,7 @@ class TestMainFunction:
             result = main()
 
         assert result == 0
-        mock_run_validators.assert_called_once_with(tmp_path, config_path=None, output_format="human")
+        mock_run_validators.assert_called_once_with(tmp_path, config_path=None, output_format="human", fail_on=[])
 
     @patch("validators.runner.run_validators")
     def test_main_validate_propagates_failure(self, mock_run_validators, tmp_path):
@@ -263,7 +280,7 @@ class TestMainFunction:
             result = main()
 
         assert result == 0
-        mock_run_validators.assert_called_once_with(tmp_path, config_path=cfg, output_format="human")
+        mock_run_validators.assert_called_once_with(tmp_path, config_path=cfg, output_format="human", fail_on=[])
 
     def test_main_check_exits_nonzero_on_unused(self, tmp_path):
         """--check returns 1 when unused imports are found (gates CI/hooks)."""
@@ -396,3 +413,126 @@ class TestMainFunction:
         print_calls = [call[0][0] for call in mock_print.call_args_list]
         verbose_info_printed = any("Running in check mode" in call for call in print_calls)
         assert verbose_info_printed
+
+
+class TestParseFailOn:
+    """Unit tests for the unified --fail-on grammar parser."""
+
+    def test_parses_severity_rule(self):
+        assert parse_fail_on(["severity=high"]) == [("severity", "high")]
+
+    def test_parses_count_rule(self):
+        assert parse_fail_on(["count=5"]) == [("count", "5")]
+
+    def test_parses_repeated_rules(self):
+        assert parse_fail_on(["severity=low", "count=0"]) == [("severity", "low"), ("count", "0")]
+
+    def test_empty_is_no_rules(self):
+        assert parse_fail_on([]) == []
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "severity",  # no '='
+            "severity=nope",  # not a ladder level
+            "count=abc",  # not an int
+            "count=-1",  # negative
+            "bogus=high",  # unknown key
+        ],
+    )
+    def test_bad_rule_raises(self, bad):
+        with pytest.raises(ValueError):
+            parse_fail_on([bad])
+
+
+class TestGateTrips:
+    """Unit tests for the --fail-on gate evaluation against raw findings."""
+
+    # unused-import findings carry internal severity "error" -> ladder "high".
+    _ERROR = [{"severity": "error"}]
+    _WARNING = [{"severity": "warning"}]
+
+    def test_no_rules_never_trips(self):
+        assert gate_trips(self._ERROR, []) is False
+
+    def test_severity_high_trips_on_error(self):
+        assert gate_trips(self._ERROR, [("severity", "high")]) is True
+
+    def test_severity_critical_does_not_trip_on_error(self):
+        assert gate_trips(self._ERROR, [("severity", "critical")]) is False
+
+    def test_severity_low_trips_on_warning(self):
+        assert gate_trips(self._WARNING, [("severity", "low")]) is True
+
+    def test_severity_high_does_not_trip_on_warning(self):
+        assert gate_trips(self._WARNING, [("severity", "high")]) is False
+
+    def test_count_trips_when_exceeded(self):
+        assert gate_trips(self._ERROR * 3, [("count", "2")]) is True
+
+    def test_count_does_not_trip_at_threshold(self):
+        assert gate_trips(self._ERROR * 2, [("count", "2")]) is False
+
+    def test_any_rule_trips(self):
+        # critical won't trip, but count=0 will.
+        assert gate_trips(self._ERROR, [("severity", "critical"), ("count", "0")]) is True
+
+
+class TestFailOnEndToEnd:
+    """End-to-end --fail-on behavior through main()."""
+
+    def _clean_file(self, tmp_path):
+        f = tmp_path / "clean.py"
+        f.write_text("import os\nprint(os.getcwd())\n")
+        return f
+
+    def _unused_file(self, tmp_path):
+        f = tmp_path / "dirty.py"
+        f.write_text("import os\nimport sys\nprint(os.getcwd())\n")  # sys unused
+        return f
+
+    def test_fail_on_severity_high_trips_on_unused(self, tmp_path):
+        f = self._unused_file(tmp_path)
+        with patch.object(sys, "argv", ["checker.py", "--check", "--fail-on", "severity=high", str(f)]):
+            assert main() == 1
+
+    def test_fail_on_severity_high_passes_when_clean(self, tmp_path):
+        f = self._clean_file(tmp_path)
+        with patch.object(sys, "argv", ["checker.py", "--check", "--fail-on", "severity=high", str(f)]):
+            assert main() == 0
+
+    def test_fail_on_count_trips(self, tmp_path):
+        f = self._unused_file(tmp_path)
+        with patch.object(sys, "argv", ["checker.py", "--check", "--fail-on", "count=0", str(f)]):
+            assert main() == 1
+
+    def test_fail_on_count_passes_clean(self, tmp_path):
+        f = self._clean_file(tmp_path)
+        with patch.object(sys, "argv", ["checker.py", "--check", "--fail-on", "count=0", str(f)]):
+            assert main() == 0
+
+    def test_fail_on_repeatable(self, tmp_path):
+        f = self._unused_file(tmp_path)
+        argv = ["checker.py", "--check", "--fail-on", "severity=critical", "--fail-on", "count=0", str(f)]
+        with patch.object(sys, "argv", argv):
+            assert main() == 1
+
+    def test_fail_on_escalates_cleanup_exit(self, tmp_path):
+        # Cleanup mode normally returns 0; --fail-on escalates it to a finding
+        # because the removed imports were recorded as findings.
+        f = self._unused_file(tmp_path)
+        with patch.object(sys, "argv", ["checker.py", "--cleanup", "--fail-on", "count=0", str(f)]):
+            assert main() == 1
+
+    def test_cleanup_without_fail_on_still_zero(self, tmp_path):
+        f = self._unused_file(tmp_path)
+        with patch.object(sys, "argv", ["checker.py", "--cleanup", str(f)]):
+            assert main() == 0
+
+    def test_bad_fail_on_value_is_usage_error(self, tmp_path):
+        f = self._clean_file(tmp_path)
+        with patch.object(sys, "argv", ["checker.py", "--check", "--fail-on", "severity=nope", str(f)]):
+            with pytest.raises(SystemExit) as excinfo:
+                main()
+            # argparse usage errors exit with code 2.
+            assert excinfo.value.code == 2

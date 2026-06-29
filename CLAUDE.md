@@ -71,3 +71,13 @@ python src/checker.py --validate .
 - `--check`/`--cleanup`/`--validate` are a required mutually-exclusive group
 - `--check` exits non-zero when unused imports are found (lints/gates CI/hooks)
 - `--validate` exits non-zero only on errors; warnings (e.g. unpinned deps) pass
+- Directory scans recurse by default; `--no-recursive` limits to the top level
+  (there is no `--recursive` flag — it was a dead `default=True` no-op, removed)
+- `--fail-on <key>=<value>` is the suite-canonical CI gate (repeatable), parsed
+  by `parse_fail_on` and evaluated by `gate_trips` in `checker.py`:
+  `severity=<critical|high|moderate|low|info>` trips on any finding at/above the
+  level (internal `error`->`high`, `warning`->`low`); `count=<N>` trips when
+  findings exceed N. A malformed rule is an argparse usage error (exit 2). The
+  gate is **additive**: it can only escalate an otherwise-clean run (exit 0) to a
+  finding (exit 1) — it never relaxes the default `--check`/`--validate` gates.
+  `run_validators` takes a `fail_on` kwarg so the gate also applies in `--validate`.
