@@ -64,8 +64,7 @@ def parse_fail_on(rules: List[str]) -> List[Tuple[str, str]]:
         if key == "severity":
             if value not in _SEVERITY_RANK:
                 raise ValueError(
-                    f"invalid --fail-on severity '{value}': "
-                    "choose from critical, high, moderate, low, info"
+                    f"invalid --fail-on severity '{value}': " "choose from critical, high, moderate, low, info"
                 )
         elif key == "count":
             try:
@@ -89,9 +88,7 @@ def gate_trips(raw_findings: List[Dict[str, Any]], rules: List[Tuple[str, str]])
     """
     if not rules:
         return False
-    ranks = [
-        _SEVERITY_RANK[_SEVERITY_LADDER.get(str(f.get("severity")), "info")] for f in raw_findings
-    ]
+    ranks = [_SEVERITY_RANK[_SEVERITY_LADDER.get(str(f.get("severity")), "info")] for f in raw_findings]
     for key, value in rules:
         if key == "severity":
             if any(rank >= _SEVERITY_RANK[value] for rank in ranks):
@@ -100,6 +97,7 @@ def gate_trips(raw_findings: List[Dict[str, Any]], rules: List[Tuple[str, str]])
             if len(raw_findings) > int(value):
                 return True
     return False
+
 
 # Short, optional remediation hints keyed by ruleId. Anything absent -> null.
 _REMEDIATION: Dict[str, str] = {
@@ -876,9 +874,7 @@ def _run_validate(
         # In json mode keep stdout clean; status goes to stderr.
         stream = sys.stderr if output_format == "json" else sys.stdout
         print(f"Validating config artifacts under: {target}", file=stream)
-    exit_code: int = run_validators(
-        target, config_path=config, output_format=output_format, fail_on=fail_on
-    )
+    exit_code: int = run_validators(target, config_path=config, output_format=output_format, fail_on=fail_on)
     return exit_code
 
 
