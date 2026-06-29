@@ -22,9 +22,9 @@ from .result import ValidationResult
 # shape matches the import-checker's json output. Flat layout (tests put ``src/``
 # on sys.path) exposes them as ``checker``; the installed wheel as ``src.checker``.
 try:  # pragma: no cover - import shim
-    from checker import build_json_report, emit_json
+    from checker import build_json_report, emit_json, gate_trips
 except ImportError:  # pragma: no cover - import shim
-    from ..checker import build_json_report, emit_json
+    from ..checker import build_json_report, emit_json, gate_trips
 
 # Validator signature: takes file text, returns a ValidationResult.
 _Validator = Callable[[str], ValidationResult]
@@ -59,6 +59,7 @@ def run_validators(
     allowed_hosts: Optional[Sequence[str]] = None,
     config_path: Optional[Path] = None,
     output_format: str = "human",
+    fail_on: Optional[Sequence[Tuple[str, str]]] = None,
 ) -> int:
     """Validate every discovered artifact and print a report. Returns exit code.
 
@@ -70,6 +71,10 @@ def run_validators(
     ``output_format`` -- ``"human"`` (default) prints the text report to stdout;
     ``"json"`` emits a single machine-readable JSON document to stdout (kept
     clean) carrying the full set of findings, while status messages go to stderr.
+
+    ``fail_on`` -- the unified ``--fail-on`` gate rules. Additive: validation
+    errors already gate (exit 1); these rules can only escalate an otherwise
+    clean run to a finding, never relax the default gate.
     """
     target = Path(target)
     json_mode = output_format == "json"
@@ -89,6 +94,11 @@ def run_validators(
         )
 
     exit_code = _resolve_exit_code(target, len(files), total_errors, total_skipped, findings, json_mode)
+
+    # The unified --fail-on gate is additive: escalate a clean run to a finding
+    # (exit 1) if any rule trips; never downgrade an existing error exit.
+    if exit_code == 0 and fail_on and gate_trips(list(findings), list(fail_on)):
+        exit_code = 1
 
     if json_mode:
         emit_json(build_json_report(target, len(files), findings, "config", exit_code))

@@ -37,6 +37,70 @@ SCHEMA_VERSION = "1.0"
 # (critical > high > moderate > low > info). error->high, warning->low.
 _SEVERITY_LADDER: Dict[str, str] = {"error": "high", "warning": "low"}
 
+# Numeric rank for the shared severity ladder (higher == more severe). Used by
+# the unified ``--fail-on`` gate to compare a finding's severity to a threshold.
+_SEVERITY_RANK: Dict[str, int] = {"info": 0, "low": 1, "moderate": 2, "high": 3, "critical": 4}
+
+
+def parse_fail_on(rules: List[str]) -> List[Tuple[str, str]]:
+    """Validate the suite-canonical ``--fail-on KEY=VALUE`` rules.
+
+    Two keys are accepted across the Dependably suite:
+      * ``severity=<critical|high|moderate|low|info>`` -- trip if any finding is
+        at or above that level on the shared ladder.
+      * ``count=<N>`` -- trip if the total number of findings exceeds ``N``.
+
+    Returns the parsed ``(key, value)`` pairs. Raises ``ValueError`` (with a
+    usage-style message) on any malformed rule so the caller can surface it as
+    an argparse error (exit 2).
+    """
+    parsed: List[Tuple[str, str]] = []
+    for rule in rules:
+        if "=" not in rule:
+            raise ValueError(f"invalid --fail-on value '{rule}': expected KEY=VALUE")
+        key, _, value = rule.partition("=")
+        key = key.strip().lower()
+        value = value.strip().lower()
+        if key == "severity":
+            if value not in _SEVERITY_RANK:
+                raise ValueError(
+                    f"invalid --fail-on severity '{value}': "
+                    "choose from critical, high, moderate, low, info"
+                )
+        elif key == "count":
+            try:
+                n = int(value)
+            except ValueError:
+                raise ValueError(f"invalid --fail-on count '{value}': expected a non-negative integer")
+            if n < 0:
+                raise ValueError(f"invalid --fail-on count '{value}': expected a non-negative integer")
+        else:
+            raise ValueError(f"invalid --fail-on key '{key}': expected 'severity' or 'count'")
+        parsed.append((key, value))
+    return parsed
+
+
+def gate_trips(raw_findings: List[Dict[str, Any]], rules: List[Tuple[str, str]]) -> bool:
+    """Return True if any ``--fail-on`` rule trips against the raw findings.
+
+    ``raw_findings`` carry the internal ``severity`` (``error``|``warning``);
+    they are mapped onto the shared ladder before comparison so the gate speaks
+    the same vocabulary as every other Dependably tool.
+    """
+    if not rules:
+        return False
+    ranks = [
+        _SEVERITY_RANK[_SEVERITY_LADDER.get(str(f.get("severity")), "info")] for f in raw_findings
+    ]
+    for key, value in rules:
+        if key == "severity":
+            if any(rank >= _SEVERITY_RANK[value] for rank in ranks):
+                return True
+        elif key == "count":
+            if len(raw_findings) > int(value):
+                return True
+    return False
+
 # Short, optional remediation hints keyed by ruleId. Anything absent -> null.
 _REMEDIATION: Dict[str, str] = {
     "unused-import": "Remove the unused import.",
@@ -752,12 +816,13 @@ Examples:
     # Target path (required)
     parser.add_argument("target", type=validate_target_path, help="Path to Python file or directory to process")
 
-    # Optional arguments
+    # Optional arguments. Directory scans recurse by default; pass --no-recursive
+    # to scan only the top level (``recursive`` defaults to True via store_false).
     parser.add_argument(
-        "--recursive", action="store_true", default=True, help="Process directories recursively (default: True)"
-    )
-    parser.add_argument(
-        "--no-recursive", dest="recursive", action="store_false", help="Do not process directories recursively"
+        "--no-recursive",
+        dest="recursive",
+        action="store_false",
+        help="Scan only the top directory level (default: recurse into subdirectories)",
     )
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
     parser.add_argument(
@@ -777,12 +842,31 @@ Examples:
         metavar="PATH",
         help="Path to a .dependably-check config (default: discovered by walking up from the target)",
     )
+    parser.add_argument(
+        "--fail-on",
+        action="append",
+        metavar="KEY=VALUE",
+        default=None,
+        help=(
+            "CI gate (repeatable): exit 1 if a rule trips. "
+            "severity=<critical|high|moderate|low|info> trips when any finding is "
+            "at or above that level on the shared severity ladder; count=<N> trips "
+            "when the total number of findings exceeds N. Additive to the default "
+            "gate (unused imports / validation errors still gate on their own)."
+        ),
+    )
     parser.add_argument("--version", action="version", version=f"python-import-checker {__version__}")
 
     return parser
 
 
-def _run_validate(target: Path, verbose: bool, config: Optional[Path] = None, output_format: str = "human") -> int:
+def _run_validate(
+    target: Path,
+    verbose: bool,
+    config: Optional[Path] = None,
+    output_format: str = "human",
+    fail_on: Optional[List[Tuple[str, str]]] = None,
+) -> int:
     """Dispatch --validate to the validators package (lazy import)."""
     try:
         from validators.runner import run_validators
@@ -792,11 +876,13 @@ def _run_validate(target: Path, verbose: bool, config: Optional[Path] = None, ou
         # In json mode keep stdout clean; status goes to stderr.
         stream = sys.stderr if output_format == "json" else sys.stdout
         print(f"Validating config artifacts under: {target}", file=stream)
-    exit_code: int = run_validators(target, config_path=config, output_format=output_format)
+    exit_code: int = run_validators(
+        target, config_path=config, output_format=output_format, fail_on=fail_on
+    )
     return exit_code
 
 
-def _run_import_check(args: argparse.Namespace) -> int:
+def _run_import_check(args: argparse.Namespace, fail_on: Optional[List[Tuple[str, str]]] = None) -> int:
     """Run the AST import checker in --check or --cleanup mode."""
     check_mode = args.check
     json_mode = args.format == "json"
@@ -814,6 +900,11 @@ def _run_import_check(args: argparse.Namespace) -> int:
     # gate CI / git hooks (linter convention). Cleanup mode returns 0 — it has
     # already removed them.
     exit_code = EXIT_FINDINGS if (check_mode and checker.total_issues > 0) else EXIT_OK
+
+    # The unified --fail-on gate is additive: it can only escalate a clean run to
+    # a finding (exit 1); it never relaxes the default gate above.
+    if exit_code == EXIT_OK and gate_trips(checker.findings, fail_on or []):
+        exit_code = EXIT_FINDINGS
 
     if json_mode:
         emit_json(
@@ -840,9 +931,16 @@ def main() -> int:
         parser = setup_argument_parser()
         args = parser.parse_args()
 
+        # Validate the unified --fail-on gate up front; a bad rule is a usage
+        # error (argparse-style exit 2), not an operational failure.
+        try:
+            fail_on_rules = parse_fail_on(args.fail_on or [])
+        except ValueError as exc:
+            parser.error(str(exc))
+
         if args.validate:
-            return _run_validate(args.target, args.verbose, args.config, args.format)
-        return _run_import_check(args)
+            return _run_validate(args.target, args.verbose, args.config, args.format, fail_on_rules)
+        return _run_import_check(args, fail_on_rules)
 
     # Operational / internal errors are NOT findings: per the suite convention
     # exit 1 is reserved for findings (block), so these exit 2.

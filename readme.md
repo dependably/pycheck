@@ -70,14 +70,19 @@ python src/checker.py [--check | --cleanup | --validate] target [options]
 
 ### Optional Arguments
 
-- `--recursive`: Process directories recursively (default: True)
-- `--no-recursive`: Process only the specified directory level
+- `--no-recursive`: Scan only the top directory level (directory scans recurse by default)
 - `--verbose`, `-v`: Enable detailed output
 - `--format {human,json}`: Output format (default: `human`). `json` emits a single
   machine-readable JSON document to stdout with the full set of findings; stdout
   is kept clean (status/progress is routed to stderr). Works in all modes.
 - `--config <path>`: Path to a `.dependably-check` config (validate mode). When
   omitted, the file is discovered by walking up from the target to the repo root.
+- `--fail-on <key>=<value>`: CI gate (repeatable). Exit `1` if a rule trips:
+  `severity=<critical|high|moderate|low|info>` trips when any finding is at or
+  above that level on the shared severity ladder; `count=<N>` trips when the
+  total number of findings exceeds `N`. Additive to the default gate (unused
+  imports in `--check`, and validation errors in `--validate`, still gate on
+  their own).
 - `--version`: Show version information
 - `--help`: Display help message
 
