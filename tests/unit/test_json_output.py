@@ -59,20 +59,27 @@ class TestCheckJsonOutput:
         doc = json.loads(out)  # raises if invalid -> proves clean valid JSON
 
         assert code == 1
-        assert doc["tool"] == "python-import-checker"
-        assert doc["mode"] == "check"
-        assert doc["exitCode"] == 1
-        assert doc["summary"]["files"] == 1
-        assert doc["summary"]["errors"] == 1
+        # Shared Dependably finding envelope (schema v1).
+        assert doc["tool"] == "python-check"
+        assert doc["schemaVersion"] == "1.0"
+        assert isinstance(doc["toolVersion"], str) and doc["toolVersion"]
+        assert doc["target"] == str(f)
+        assert doc["summary"]["exitCode"] == 1
+        assert doc["summary"]["scanned"] == 1
+        assert doc["summary"]["findings"] == len(doc["findings"]) == 1
+        assert doc["summary"]["bySeverity"]["high"] == 1
 
         findings = doc["findings"]
         assert len(findings) == 1
         finding = findings[0]
-        assert finding["code"] == "unused-import"
-        assert finding["severity"] == "error"
-        assert finding["line"] == 2
-        assert finding["file"] == str(f)
+        assert finding["ruleId"] == "unused-import"
+        assert finding["category"] == "lint"
+        assert finding["severity"] == "high"  # error -> high on the shared ladder
+        assert finding["location"]["file"] == str(f)
+        assert finding["location"]["line"] == 2
+        assert finding["location"]["column"] is None
         assert "sys" in finding["message"]
+        assert finding["remediation"]  # short hint present for unused-import
 
     def test_json_matches_human_finding_count(self, tmp_path, capsys):
         """The json finding set is COMPLETE -- same count the human report shows."""
@@ -100,9 +107,10 @@ class TestCheckJsonOutput:
         doc = json.loads(out)
 
         assert code == 0
-        assert doc["exitCode"] == 0
+        assert doc["summary"]["exitCode"] == 0
         assert doc["findings"] == []
-        assert doc["summary"]["errors"] == 0
+        assert doc["summary"]["findings"] == 0
+        assert doc["summary"]["bySeverity"]["high"] == 0
 
 
 class TestExitCodeConvention:
