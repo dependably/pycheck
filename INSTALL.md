@@ -20,28 +20,42 @@ pip install -e .
 pip install -r requirements-dev.txt
 ```
 
-### 2. Install from Distribution Package
+### 2. Build and Install a Distribution Package
+
+The distribution is `Dependably.pycheck` (current version `1.2.0`). Build the
+wheel and source distribution locally, then install the built artifact:
 
 ```bash
-# Install from wheel file
-pip install dist/python_library_checker-1.1.0-py3-none-any.whl
-
-# Or install from source distribution
-pip install dist/python_library_checker-1.1.0.tar.gz
-```
-
-### 3. Build and Install
-
-```bash
-# Install build dependencies
+# Install the build front-end (one time)
 pip install build
 
-# Build the package
+# Build the wheel + sdist into dist/
 python -m build
 
-# Install the built package
-pip install dist/python_library_checker-1.1.0-py3-none-any.whl
+# Install the freshly built wheel
+pip install dist/dependably_pycheck-1.2.0-py3-none-any.whl
+
+# Or install the source distribution
+pip install dist/dependably_pycheck-1.2.0.tar.gz
 ```
+
+`python -m build` normalizes the project name (`Dependably.pycheck`) to
+`dependably_pycheck` in the artifact filenames, so the produced files are
+`dependably_pycheck-1.2.0-py3-none-any.whl` and `dependably_pycheck-1.2.0.tar.gz`.
+The editable install in method 1 (`pip install -e .`) avoids the filename
+entirely and is the simplest path for development.
+
+### 3. Install from PyPI (once published)
+
+`Dependably.pycheck` is **not yet published to PyPI**. Once it is released, it
+will install with:
+
+```bash
+pip install Dependably.pycheck
+```
+
+Until then, use the from-source (method 1) or build-and-install (method 2)
+instructions above.
 
 ## Usage
 

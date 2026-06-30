@@ -92,20 +92,46 @@ With `--format json` the tool writes one JSON document to stdout:
 
 ```json
 {
-  "tool": "python-import-checker",
-  "version": "1.2.0",
-  "mode": "check",
-  "summary": { "files": 1, "errors": 1, "warnings": 0, "skipped": 0 },
+  "tool": "Dependably.pycheck",
+  "toolVersion": "1.2.0",
+  "schemaVersion": "1.0",
+  "target": "src",
+  "summary": {
+    "scanned": 1,
+    "findings": 1,
+    "bySeverity": {
+      "critical": 0,
+      "high": 1,
+      "moderate": 0,
+      "low": 0,
+      "info": 0
+    },
+    "exitCode": 1
+  },
   "findings": [
-    { "code": "unused-import", "file": "x.py", "line": 2,
-      "message": "unused import: import sys", "severity": "error" }
-  ],
-  "exitCode": 1
+    {
+      "severity": "high",
+      "ruleId": "unused-import",
+      "category": "lint",
+      "message": "unused import: import os",
+      "location": { "file": "src/x.py", "line": 1, "column": null },
+      "remediation": "Remove the unused import."
+    }
+  ]
 }
 ```
 
-Each finding carries a `code`, the `file` it was found in, an optional 1-based
-`line`, a `message`, and a `severity` (`error` or `warning`).
+The document is the Dependably suite's shared **schema v1** envelope:
+`tool` is the distribution name (`Dependably.pycheck`), `toolVersion` is the
+package version, and `schemaVersion` is `"1.0"`. `target` echoes the scanned
+path. `summary` carries `scanned` (files), `findings` (total count),
+`bySeverity` (a count per level on the shared severity ladder —
+`critical`/`high`/`moderate`/`low`/`info`), and the process `exitCode`.
+
+Each entry in `findings[]` carries a `severity` (ladder level), a `ruleId`
+(e.g. `unused-import`), a `category` (e.g. `lint`), a human-readable `message`,
+a `location` object (`file`, optional 1-based `line`, optional `column`), and a
+`remediation` hint.
 
 Exit codes follow the Dependably suite convention: `0` clean, `1` findings
 (blocking), `2` usage error or operational/internal error; `--help` and
