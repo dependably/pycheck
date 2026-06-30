@@ -61,22 +61,31 @@ def parse_fail_on(rules: List[str]) -> List[Tuple[str, str]]:
         key, _, value = rule.partition("=")
         key = key.strip().lower()
         value = value.strip().lower()
-        if key == "severity":
-            if value not in _SEVERITY_RANK:
-                raise ValueError(
-                    f"invalid --fail-on severity '{value}': " "choose from critical, high, moderate, low, info"
-                )
-        elif key == "count":
-            try:
-                n = int(value)
-            except ValueError:
-                raise ValueError(f"invalid --fail-on count '{value}': expected a non-negative integer")
-            if n < 0:
-                raise ValueError(f"invalid --fail-on count '{value}': expected a non-negative integer")
-        else:
-            raise ValueError(f"invalid --fail-on key '{key}': expected 'severity' or 'count'")
+        _validate_fail_on_rule(key, value)
         parsed.append((key, value))
     return parsed
+
+
+def _validate_fail_on_rule(key: str, value: str) -> None:
+    """Validate a single parsed ``--fail-on`` ``key``/``value`` pair.
+
+    Raises ``ValueError`` (with a usage-style message) when the key is unknown or
+    the value is invalid for its key. See :func:`parse_fail_on` for the rules.
+    """
+    if key == "severity":
+        if value not in _SEVERITY_RANK:
+            raise ValueError(
+                f"invalid --fail-on severity '{value}': " "choose from critical, high, moderate, low, info"
+            )
+    elif key == "count":
+        try:
+            n = int(value)
+        except ValueError:
+            n = -1
+        if n < 0:
+            raise ValueError(f"invalid --fail-on count '{value}': expected a non-negative integer")
+    else:
+        raise ValueError(f"invalid --fail-on key '{key}': expected 'severity' or 'count'")
 
 
 def gate_trips(raw_findings: List[Dict[str, Any]], rules: List[Tuple[str, str]]) -> bool:
@@ -93,9 +102,8 @@ def gate_trips(raw_findings: List[Dict[str, Any]], rules: List[Tuple[str, str]])
         if key == "severity":
             if any(rank >= _SEVERITY_RANK[value] for rank in ranks):
                 return True
-        elif key == "count":
-            if len(raw_findings) > int(value):
-                return True
+        elif key == "count" and len(raw_findings) > int(value):
+            return True
     return False
 
 
