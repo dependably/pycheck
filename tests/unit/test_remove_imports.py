@@ -428,3 +428,84 @@ def main():
 
         expected = "import os\r\n\r\ndef main():\r\n    return os.getcwd()\r\n"
         assert result == expected
+
+
+import ast
+
+
+class TestCleanupCorruptionRegression:
+    """Regression tests: cleanup must never corrupt source (never delete a used
+    name, orphan a continuation line, drop relative-import dots, or remove a
+    wildcard import). Every case runs the full extract -> analyze -> rewrite
+    pipeline and asserts the result still parses.
+    """
+
+    def setup_method(self):
+        self.checker = ImportChecker()
+
+    def _clean(self, code):
+        """Run the real cleanup pipeline and assert the output is parseable."""
+        tree = ast.parse(code)
+        imports = self.checker.extract_imports_from_ast(tree)
+        references = self.checker.extract_name_references(tree)
+        _used, unused = self.checker.analyze_imports(imports, references)
+        result = self.checker.remove_unused_imports(code, unused)
+        ast.parse(result)  # cleanup output must always remain valid Python
+        return result
+
+    # --- #1: plain `import a, b` partial removal ------------------------------
+
+    def test_plain_multi_import_keeps_used_name(self):
+        result = self._clean("import os, sys\nprint(sys.argv)\n")
+        assert "import sys" in result
+        assert "os" not in result.split("\n")[0]  # os dropped from the import
+        assert "print(sys.argv)" in result
+
+    def test_plain_multi_import_all_unused_removed(self):
+        result = self._clean("import os, sys\nprint('hi')\n")
+        assert "import" not in result
+        assert "print('hi')" in result
+
+    def test_plain_multi_import_preserves_alias(self):
+        result = self._clean("import numpy as np, os\nprint(np.pi)\n")
+        assert "import numpy as np" in result
+        assert "os" not in result.split("\n")[0]
+
+    def test_plain_backslash_continued_partial(self):
+        result = self._clean("import os, \\\n    sys\nprint(sys.argv)\n")
+        assert "sys" in result
+        assert "print(sys.argv)" in result
+        # The orphaned continuation line must not survive on its own.
+        assert not any(line.strip() == "sys" for line in result.splitlines())
+
+    def test_plain_backslash_continued_all_unused_removed(self):
+        result = self._clean("import os, \\\n    sys\nprint('hi')\n")
+        assert "os" not in result
+        assert "sys" not in result
+        assert "print('hi')" in result
+
+    # --- #11: relative-import dots preserved ----------------------------------
+
+    def test_relative_bare_partial_removal(self):
+        result = self._clean("from . import alpha, beta\nprint(beta)\n")
+        assert "from . import beta" in result
+        assert "from  import" not in result  # dots must not be dropped
+
+    def test_relative_module_partial_removal(self):
+        result = self._clean("from .models import A, B\nprint(B)\n")
+        assert "from .models import B" in result
+
+    def test_relative_full_removal(self):
+        result = self._clean("from ..pkg import unused\nx = 1\n")
+        assert "import" not in result
+        assert "x = 1" in result
+
+    # --- #12: wildcard imports never removed ----------------------------------
+
+    def test_star_import_preserved_when_names_used(self):
+        result = self._clean("from os.path import *\nprint(join('a', 'b'))\n")
+        assert "from os.path import *" in result
+
+    def test_star_import_preserved_even_when_nothing_used(self):
+        result = self._clean("from os.path import *\n")
+        assert "from os.path import *" in result

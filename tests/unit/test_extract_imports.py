@@ -177,9 +177,11 @@ from ...parent import module
         formatter_import = next(imp for imp in imports if imp.names == ["formatter"])
         module_import = next(imp for imp in imports if imp.names == ["module"])
 
-        assert helper_import.module == ""  # Relative import with no module name
-        assert formatter_import.module == "utils"
-        assert module_import.module == "parent"
+        # The relative-import level (leading dots) is preserved so the module
+        # round-trips on cleanup instead of collapsing to the wrong absolute name.
+        assert helper_import.module == "."  # `from . import helper`
+        assert formatter_import.module == "..utils"
+        assert module_import.module == "...parent"
 
         for imp in imports:
             assert imp.is_from_import is True

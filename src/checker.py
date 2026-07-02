@@ -309,7 +309,9 @@ class ImportChecker:
 
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
-                # Handle 'import module' statements
+                # Handle 'import module' statements (may list several modules).
+                all_names = [alias.name for alias in node.names]
+                all_aliases = [alias.asname for alias in node.names]
                 for alias in node.names:
                     import_info = ImportInfo(
                         module=alias.name,
@@ -318,11 +320,18 @@ class ImportChecker:
                         line_number=node.lineno,
                         is_from_import=False,
                     )
+                    # Record the modules/aliases sharing this line so cleanup can
+                    # partially rewrite `import a, b` instead of dropping the line.
+                    import_info.all_names_on_line = all_names
+                    import_info.all_aliases_on_line = all_aliases
                     imports.append(import_info)
 
             elif isinstance(node, ast.ImportFrom):
-                # Handle 'from module import name' statements
-                module_name = node.module or ""  # Handle relative imports
+                # Handle 'from module import name' statements. Preserve the
+                # relative-import level (leading dots) so the module round-trips:
+                # dropping node.level turns `from .pkg import x` into the wrong
+                # absolute module (or an unparseable `from  import x`) on cleanup.
+                module_name = "." * node.level + (node.module or "")
 
                 # `from __future__ import ...` are compiler directives, not real
                 # imports — they're never referenced by name, so never "unused".
@@ -389,6 +398,11 @@ class ImportChecker:
     def _import_is_used(import_info: ImportInfo, references: Set[str]) -> bool:
         """Return True if an import (or its alias) is referenced in the code."""
         if import_info.is_from_import:
+            # `from module import *` exposes an unknowable set of names, so it can
+            # never be proven unused — treat it as always used (pyflakes does the
+            # same). Otherwise cleanup would delete a live wildcard import.
+            if "*" in import_info.names:
+                return True
             # 'from module import name' — any imported name (or its alias) used.
             return any((import_info.alias or name) in references for name in import_info.names)
 
@@ -413,11 +427,14 @@ class ImportChecker:
             return content
 
         lines = content.splitlines(keepends=True)
-        unused_by_line, lines_to_remove = self._partition_unused(unused_imports)
+        from_by_line, plain_by_line = self._partition_unused(unused_imports)
+        lines_to_remove: Set[int] = set()
 
-        # Rewrite each from-import statement that needs partial removal.
-        for line_number, unused_from_line in unused_by_line.items():
+        # Rewrite each statement that needs partial removal, keeping used names.
+        for line_number, unused_from_line in from_by_line.items():
             self._rewrite_from_import(lines, line_number, unused_from_line, lines_to_remove)
+        for line_number, unused_plain_line in plain_by_line.items():
+            self._rewrite_plain_import(lines, line_number, unused_plain_line, lines_to_remove)
 
         filtered_lines = [line for i, line in enumerate(lines) if i not in lines_to_remove]
         return self._collapse_blank_lines(filtered_lines)
@@ -425,20 +442,20 @@ class ImportChecker:
     @staticmethod
     def _partition_unused(
         unused_imports: List[ImportInfo],
-    ) -> Tuple[Dict[int, List[ImportInfo]], Set[int]]:
-        """Split unused imports into per-line from-imports and whole lines to drop.
+    ) -> Tuple[Dict[int, List[ImportInfo]], Dict[int, List[ImportInfo]]]:
+        """Group unused imports by 1-based line number, split by statement kind.
 
-        Returns (from-imports grouped by 1-based line number, 0-based line
-        indices to remove outright for plain ``import module`` statements).
+        Returns ``(from_by_line, plain_by_line)``. Both ``from module import ...``
+        and plain ``import a, b`` statements can list several names and span
+        multiple physical lines, so each is rewritten in place rather than having
+        its line dropped wholesale (which would delete a used name sharing it).
         """
-        unused_by_line: Dict[int, List[ImportInfo]] = {}
-        lines_to_remove: Set[int] = set()
+        from_by_line: Dict[int, List[ImportInfo]] = {}
+        plain_by_line: Dict[int, List[ImportInfo]] = {}
         for import_info in unused_imports:
-            if import_info.is_from_import:
-                unused_by_line.setdefault(import_info.line_number, []).append(import_info)
-            else:
-                lines_to_remove.add(import_info.line_number - 1)  # 0-based
-        return unused_by_line, lines_to_remove
+            bucket = from_by_line if import_info.is_from_import else plain_by_line
+            bucket.setdefault(import_info.line_number, []).append(import_info)
+        return from_by_line, plain_by_line
 
     def _rewrite_from_import(
         self,
@@ -482,6 +499,61 @@ class ImportChecker:
         new_import_line = f"from {module_name} import {', '.join(remaining_names)}"
         indent = original_line[: len(original_line) - len(original_line.lstrip())]
         newline = "\r\n" if original_line.endswith("\r\n") else "\n"
+
+        # Preserve an inline comment only for single-line statements.
+        comment = ""
+        if end_idx == start_idx and "#" in original_line:
+            comment = original_line[original_line.find("#") :].rstrip("\r\n")
+
+        if comment:
+            lines[start_idx] = f"{indent}{new_import_line}  {comment}{newline}"
+        else:
+            lines[start_idx] = f"{indent}{new_import_line}{newline}"
+
+    def _rewrite_plain_import(
+        self,
+        lines: List[str],
+        line_number: int,
+        unused_on_line: List[ImportInfo],
+        lines_to_remove: Set[int],
+    ) -> None:
+        """Rewrite a plain ``import a, b`` statement in place, dropping unused modules.
+
+        The plain-import analogue of :meth:`_rewrite_from_import`. A single
+        ``import`` statement may list several comma-separated modules and be
+        backslash-continued across physical lines; only when every module on it
+        is unused is the whole statement removed, otherwise the used modules are
+        kept. This avoids deleting a used module (or an orphaned continuation
+        line) when just one name on the statement is unused.
+        """
+        start_idx = line_number - 1  # 0-based
+        if not (0 <= start_idx < len(lines)):
+            return
+
+        end_idx = self._find_statement_span(lines, start_idx)
+        original_line = lines[start_idx]
+        all_names = unused_on_line[0].all_names_on_line
+        all_aliases = unused_on_line[0].all_aliases_on_line
+        unused_modules = {imp.module for imp in unused_on_line}
+
+        remaining = [
+            f"{name} as {all_aliases[i]}" if all_aliases[i] else name
+            for i, name in enumerate(all_names)
+            if name not in unused_modules
+        ]
+
+        # Drop every continuation line of the statement.
+        for idx in range(start_idx + 1, end_idx + 1):
+            lines_to_remove.add(idx)
+
+        if not remaining:
+            # Every module on the statement was unused — remove it entirely.
+            lines_to_remove.add(start_idx)
+            return
+
+        indent = original_line[: len(original_line) - len(original_line.lstrip())]
+        newline = "\r\n" if original_line.endswith("\r\n") else "\n"
+        new_import_line = f"import {', '.join(remaining)}"
 
         # Preserve an inline comment only for single-line statements.
         comment = ""
