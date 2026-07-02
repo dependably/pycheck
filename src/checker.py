@@ -8,9 +8,11 @@ Supports both read-only analysis and automatic cleanup of unused imports.
 
 import argparse
 import ast
+import io
 import json
 import shutil
 import sys
+import tokenize
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -197,9 +199,20 @@ class ImportInfo:
         self.line_number = line_number
         self.is_from_import = is_from_import  # True for 'from X import Y'
         self.used = False  # Track if this import is used
-        # Populated for from-imports: every name/alias sharing this physical line
+        # Every name/alias sharing this physical line (for partial rewrites).
         self.all_names_on_line: List[str] = []
         self.all_aliases_on_line: List[Optional[str]] = []
+        # True when another statement shares this line (e.g. `import os; f()`);
+        # such imports are never auto-removed to avoid deleting the neighbour.
+        self.shares_line = False
+        # True when this import is the only statement in its (non-module) block;
+        # removing it would leave an empty block that no longer parses.
+        self.sole_in_block = False
+
+    @property
+    def safe_to_remove(self) -> bool:
+        """False when auto-removal would corrupt surrounding code."""
+        return not self.shares_line and not self.sole_in_block
 
     def __repr__(self) -> str:
         return f"ImportInfo(module='{self.module}', names={self.names}, alias='{self.alias}', line={self.line_number})"
@@ -226,6 +239,61 @@ class _NameReferenceVisitor(ast.NodeVisitor):
         if isinstance(node.value, ast.Name) and isinstance(node.value.ctx, ast.Load):
             self._references.add(node.value.id)
         self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        # `x: "Decimal"` — the annotation may be a string forward reference.
+        self._collect_string_annotations(node.annotation)
+        self.generic_visit(node)
+
+    def visit_arg(self, node: ast.arg) -> None:
+        # `def f(x: "Decimal")` — argument annotations may be forward references.
+        if node.annotation is not None:
+            self._collect_string_annotations(node.annotation)
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        # `def f(...) -> "Decimal"` — return annotations may be forward references.
+        if node.returns is not None:
+            self._collect_string_annotations(node.returns)
+        self.generic_visit(node)
+
+    # Async defs carry the same annotation surface.
+    visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
+
+    def visit_Call(self, node: ast.Call) -> None:
+        # `cast("Decimal", x)` / `typing.cast(...)` — first arg is a forward ref.
+        func = node.func
+        is_cast = (isinstance(func, ast.Name) and func.id == "cast") or (
+            isinstance(func, ast.Attribute) and func.attr == "cast"
+        )
+        if is_cast and node.args:
+            self._collect_string_annotations(node.args[0])
+        self.generic_visit(node)
+
+    def _collect_string_annotations(self, annotation: ast.expr) -> None:
+        """Register names used inside string (forward-reference) annotations.
+
+        A forward reference such as ``x: "Decimal"`` or ``Optional["Decimal"]``
+        stores the referenced name as a string constant, so it is never seen as
+        a normal load. Without this, imports used only in string annotations
+        (commonly ``TYPE_CHECKING`` imports) are reported unused — and cleanup
+        would delete them, sometimes leaving an empty ``if TYPE_CHECKING:`` block
+        that no longer parses.
+        """
+        for sub in ast.walk(annotation):
+            if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                self._collect_forward_ref(sub.value)
+
+    def _collect_forward_ref(self, text: str) -> None:
+        try:
+            expr = ast.parse(text.strip(), mode="eval")
+        except (SyntaxError, ValueError):
+            return
+        for sub in ast.walk(expr):
+            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+                self._references.add(sub.id)
+            elif isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name):
+                self._references.add(sub.value.id)
 
     def visit_Import(self, node: ast.Import) -> None:
         # Skip import statements themselves.
@@ -306,6 +374,8 @@ class ImportChecker:
             List of ImportInfo objects containing import details
         """
         imports = []
+        shared_lines = self._shared_statement_lines(tree)
+        sole_block_lines = self._sole_block_import_lines(tree)
 
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -324,6 +394,8 @@ class ImportChecker:
                     # partially rewrite `import a, b` instead of dropping the line.
                     import_info.all_names_on_line = all_names
                     import_info.all_aliases_on_line = all_aliases
+                    import_info.shares_line = node.lineno in shared_lines
+                    import_info.sole_in_block = node.lineno in sole_block_lines
                     imports.append(import_info)
 
             elif isinstance(node, ast.ImportFrom):
@@ -354,9 +426,45 @@ class ImportChecker:
                     # Store reference to all names on the same line for cleanup
                     import_info.all_names_on_line = all_names
                     import_info.all_aliases_on_line = all_aliases
+                    import_info.shares_line = node.lineno in shared_lines
+                    import_info.sole_in_block = node.lineno in sole_block_lines
                     imports.append(import_info)
 
         return imports
+
+    @staticmethod
+    def _sole_block_import_lines(tree: ast.AST) -> Set[int]:
+        """Line numbers of imports that are the only statement in a nested block.
+
+        Removing such an import would leave an empty block body (e.g. an
+        ``if TYPE_CHECKING:`` guard or a function body) that no longer parses.
+        The module body is exempt — an empty module is valid Python.
+        """
+        lines: Set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Module):
+                continue
+            for field in ("body", "orelse", "finalbody"):
+                block = getattr(node, field, None)
+                if isinstance(block, list) and len(block) == 1:
+                    stmt = block[0]
+                    if isinstance(stmt, (ast.Import, ast.ImportFrom)):
+                        lines.add(stmt.lineno)
+        return lines
+
+    @staticmethod
+    def _shared_statement_lines(tree: ast.AST) -> Set[int]:
+        """Line numbers that begin more than one statement (e.g. ``import os; f()``).
+
+        An import sharing its line with another statement cannot be removed or
+        rewritten safely — dropping the physical line would delete the neighbour
+        too — so cleanup leaves these imports in place.
+        """
+        counts: Dict[int, int] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.stmt):
+                counts[node.lineno] = counts.get(node.lineno, 0) + 1
+        return {line for line, count in counts.items() if count > 1}
 
     def extract_name_references(self, tree: ast.AST) -> Set[str]:
         """
@@ -423,11 +531,14 @@ class ImportChecker:
         Returns:
             Modified content with unused imports removed
         """
-        if not unused_imports:
+        # Never touch an import whose removal would corrupt surrounding code
+        # (shares its line with another statement, or is a block's sole body).
+        removable = [imp for imp in unused_imports if imp.safe_to_remove]
+        if not removable:
             return content
 
         lines = content.splitlines(keepends=True)
-        from_by_line, plain_by_line = self._partition_unused(unused_imports)
+        from_by_line, plain_by_line = self._partition_unused(removable)
         lines_to_remove: Set[int] = set()
 
         # Rewrite each statement that needs partial removal, keeping used names.
@@ -436,8 +547,8 @@ class ImportChecker:
         for line_number, unused_plain_line in plain_by_line.items():
             self._rewrite_plain_import(lines, line_number, unused_plain_line, lines_to_remove)
 
-        filtered_lines = [line for i, line in enumerate(lines) if i not in lines_to_remove]
-        return self._collapse_blank_lines(filtered_lines)
+        string_lines = self._multiline_string_lines(content)
+        return self._finalize_lines(lines, lines_to_remove, string_lines)
 
     @staticmethod
     def _partition_unused(
@@ -566,19 +677,56 @@ class ImportChecker:
             lines[start_idx] = f"{indent}{new_import_line}{newline}"
 
     @staticmethod
-    def _collapse_blank_lines(filtered_lines: List[str]) -> str:
-        """Join lines, collapsing runs of more than 2 consecutive blank lines."""
-        result_lines: List[str] = []
-        blank_count = 0
-        for line in filtered_lines:
-            if line.strip() == "":
-                blank_count += 1
-                if blank_count <= 2:  # Allow up to 2 consecutive blank lines
-                    result_lines.append(line)
+    def _multiline_string_lines(content: str) -> Set[int]:
+        """0-based indices of physical lines that lie inside a multi-line string.
+
+        Blank lines inside triple-quoted strings must never be collapsed, or the
+        string's value would change. Only strings spanning more than one physical
+        line can contain a blank line, so single-line strings are ignored.
+        """
+        string_lines: Set[int] = set()
+        try:
+            for tok in tokenize.generate_tokens(io.StringIO(content).readline):
+                if tok.type == tokenize.STRING and tok.end[0] > tok.start[0]:
+                    for lineno in range(tok.start[0], tok.end[0] + 1):
+                        string_lines.add(lineno - 1)  # 0-based
+        except (tokenize.TokenError, IndentationError, SyntaxError):
+            # Tokenizing failed (already-odd source); collapse nothing to be safe.
+            pass
+        return string_lines
+
+    @staticmethod
+    def _finalize_lines(lines: List[str], lines_to_remove: Set[int], string_lines: Set[int]) -> str:
+        """Drop removed lines and collapse only removal-seam blank runs to <=2.
+
+        A run of blank lines is collapsed only when it borders (or spans) a
+        removed line, so blank runs in untouched code keep their original
+        spacing; blank lines inside multi-line strings are never collapsed.
+        """
+        kept = [(i, line) for i, line in enumerate(lines) if i not in lines_to_remove]
+        result: List[str] = []
+        run: List[Tuple[int, str]] = []
+
+        def flush() -> None:
+            if not run:
+                return
+            lo, hi = run[0][0], run[-1][0]
+            # A seam is a removed line adjacent to, or interspersed within, the run.
+            seam = any(idx in lines_to_remove for idx in range(lo - 1, hi + 2))
+            if seam and len(run) > 2:
+                result.extend(line for _, line in run[:2])
             else:
-                blank_count = 0
-                result_lines.append(line)
-        return "".join(result_lines)
+                result.extend(line for _, line in run)
+
+        for idx, line in kept:
+            if line.strip() == "" and idx not in string_lines:
+                run.append((idx, line))
+            else:
+                flush()
+                run = []
+                result.append(line)
+        flush()
+        return "".join(result)
 
     def _find_statement_span(self, lines: List[str], start_idx: int) -> int:
         """
@@ -691,23 +839,33 @@ class ImportChecker:
                 print("  No unused imports to remove")
             return
 
-        if not self.quiet:
-            print(f"  Removing {len(unused_imports)} unused import(s)")
+        # Imports whose removal would corrupt code are reported but left untouched.
+        removable = [imp for imp in unused_imports if imp.safe_to_remove]
+        skipped = [imp for imp in unused_imports if not imp.safe_to_remove]
 
-        # Create a backup before modifying.
-        backup_path = file_path.with_suffix(file_path.suffix + ".backup")
-        self.log_verbose(f"Creating backup: {backup_path}")
-        shutil.copy2(file_path, backup_path)
+        if removable:
+            if not self.quiet:
+                print(f"  Removing {len(removable)} unused import(s)")
 
-        modified_content = self.remove_unused_imports(content, unused_imports)
-        with open(file_path, "w", encoding="utf-8") as file:
-            file.write(modified_content)
+            # Create a backup before modifying.
+            backup_path = file_path.with_suffix(file_path.suffix + ".backup")
+            self.log_verbose(f"Creating backup: {backup_path}")
+            shutil.copy2(file_path, backup_path)
 
-        if not self.quiet:
-            print("  Removed imports:")
-            for import_info in unused_imports:
+            modified_content = self.remove_unused_imports(content, removable)
+            with open(file_path, "w", encoding="utf-8") as file:
+                file.write(modified_content)
+
+            if not self.quiet:
+                print("  Removed imports:")
+                for import_info in removable:
+                    print(f"    Line {import_info.line_number}: {self._format_import(import_info)}")
+                print(f"  Backup saved as: {backup_path}")
+
+        if skipped and not self.quiet:
+            print("  Left in place (unsafe to auto-remove):")
+            for import_info in skipped:
                 print(f"    Line {import_info.line_number}: {self._format_import(import_info)}")
-            print(f"  Backup saved as: {backup_path}")
 
     def process_file(self, file_path: Path) -> None:
         """

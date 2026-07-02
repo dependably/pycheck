@@ -509,3 +509,89 @@ class TestCleanupCorruptionRegression:
     def test_star_import_preserved_even_when_nothing_used(self):
         result = self._clean("from os.path import *\n")
         assert "from os.path import *" in result
+
+    # --- #2: compound statements sharing a physical line --------------------
+
+    def test_compound_semicolon_import_left_in_place(self):
+        # `import os; print(...)` — os is unused but removing the line would
+        # delete the print; the whole statement is left untouched.
+        code = 'import os; print("kept")\n'
+        assert self._clean(code) == code
+
+    def test_compound_two_imports_one_used_left_in_place(self):
+        code = "import os; import sys\nprint(sys.argv)\n"
+        assert self._clean(code) == code
+
+    # --- #3: TYPE_CHECKING / string forward-reference annotations -----------
+
+    def test_type_checking_forward_ref_import_preserved(self):
+        code = (
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING:\n"
+            "    from decimal import Decimal\n"
+            'def f(x: "Decimal") -> "Decimal":\n'
+            "    return x\n"
+        )
+        # Decimal is used via string annotations -> nothing is removed.
+        assert self._clean(code) == code
+
+    def test_forward_ref_in_annassign_and_nested_generic(self):
+        code = (
+            "from decimal import Decimal\n"
+            "from typing import Optional\n"
+            'x: Optional["Decimal"] = None\n'
+            "print(x)\n"
+        )
+        assert "from decimal import Decimal" in self._clean(code)
+
+    def test_forward_ref_in_cast_preserved(self):
+        code = "from typing import cast\n" "from decimal import Decimal\n" 'd = cast("Decimal", 1)\n' "print(d)\n"
+        assert "from decimal import Decimal" in self._clean(code)
+
+    def test_genuinely_unused_type_checking_import_left_in_place(self):
+        # No forward reference uses it, but removing the sole block statement
+        # would leave `if TYPE_CHECKING:` empty and unparseable.
+        code = (
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING:\n"
+            "    from decimal import Decimal\n"
+            'print("no annotations")\n'
+        )
+        result = self._clean(code)
+        assert "from decimal import Decimal" in result
+
+    def test_sole_import_in_block_left_in_place(self):
+        code = "if True:\n    import os\nprint('hi')\n"
+        assert self._clean(code) == code
+
+    def test_sole_import_in_function_left_in_place(self):
+        code = "def f():\n    import os\nf()\n"
+        assert self._clean(code) == code
+
+    def test_non_sole_import_in_function_removed(self):
+        code = "def f():\n    import os\n    return 1\nf()\n"
+        result = self._clean(code)
+        assert "import os" not in result
+        assert "return 1" in result
+
+    # --- #4: blank-line collapse scoped to removal seams --------------------
+
+    def test_blank_lines_inside_string_not_collapsed(self):
+        code = 'import os\n\nS = """x\n\n\n\ny"""\nprint(S)\n'
+        result = self._clean(code)
+        assert "import os" not in result
+        assert "x\n\n\n\ny" in result  # string interior preserved verbatim
+
+    def test_untouched_blank_run_preserved(self):
+        code = "import os\nx = 1\n\n\n\ny = 2\n"
+        result = self._clean(code)
+        assert "import os" not in result
+        # The blank run between x and y is not a removal seam -> left as-is.
+        assert "x = 1\n\n\n\ny = 2" in result
+
+    def test_removal_seam_blank_run_collapsed(self):
+        code = "import os\nimport sys\n\n\n\nimport requests\nprint(requests)\n"
+        result = self._clean(code)
+        # os and sys unused, requests used; the >2 blank seam collapses to 2.
+        assert "import requests" in result
+        assert "\n\n\n" not in result
