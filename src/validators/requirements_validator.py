@@ -9,7 +9,7 @@ pip.conf validator -- treats credentials embedded in an index URL and
 from __future__ import annotations
 
 import re
-from typing import Optional, Sequence
+from typing import Iterator, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
 from ._pep508 import is_valid_pep508
@@ -24,9 +24,55 @@ _PINNED_RE = re.compile(r"(===|==)")
 _URL_REQUIREMENT_RE = re.compile(r"^\s*(-e\s|--editable\s|git\+|hg\+|svn\+|bzr\+|https?://|file:)")
 # An option line, e.g. ``--index-url https://...`` or ``-i https://...``.
 _OPTION_RE = re.compile(r"^\s*(--?[A-Za-z][\w-]*)(?:[=\s]+(.*))?$")
+# An inline comment: whitespace + ``#`` (a URL ``#egg=`` fragment has no
+# preceding whitespace and is preserved).
+_INLINE_COMMENT_RE = re.compile(r"\s#.*$")
 
 _INDEX_OPTS = frozenset({"-i", "--index-url", "--extra-index-url"})
 _INCLUDE_OPTS = frozenset({"-r", "--requirement", "-c", "--constraint"})
+
+
+def _strip_inline_comment(raw: str) -> str:
+    """Drop a pip inline comment (whitespace + ``#``), keeping URL fragments."""
+    return _INLINE_COMMENT_RE.sub("", raw)
+
+
+def _logical_lines(content: str) -> Iterator[Tuple[int, str]]:
+    """Yield ``(lineno, text)`` joining backslash-continued physical lines.
+
+    ``lineno`` is the 1-based number of the logical line's FIRST physical line,
+    so findings keep pointing at where the requirement starts. Inline comments
+    are stripped per physical line before continuations are joined.
+    """
+    buf = ""
+    start: Optional[int] = None
+    for i, raw in enumerate(content.splitlines(), start=1):
+        text = _strip_inline_comment(raw)
+        if start is None:
+            start = i
+        if text.rstrip().endswith("\\"):
+            buf += text.rstrip()[:-1] + " "
+            continue
+        buf += text
+        yield start, buf
+        buf, start = "", None
+    if start is not None:  # dangling backslash at EOF
+        yield start, buf
+
+
+def _requirement_spec(line: str) -> str:
+    """Return the requirement portion, dropping trailing pip options.
+
+    A requirement line may carry per-requirement options (``--hash``,
+    ``--config-settings``, ``--global-option`` ...) that are not part of the
+    PEP 508 spec. Everything from the first ``-``-prefixed token on is dropped.
+    """
+    kept: list[str] = []
+    for token in line.split():
+        if token.startswith("-"):
+            break
+        kept.append(token)
+    return " ".join(kept)
 
 
 def validate_requirements(content: str, *, allowed_hosts: Optional[Sequence[str]] = None) -> ValidationResult:
@@ -42,11 +88,10 @@ def validate_requirements(content: str, *, allowed_hosts: Optional[Sequence[str]
     r.info["requirements"] = 0
     includes: list[str] = []
 
-    for i, raw in enumerate(content.splitlines(), start=1):
-        # Strip inline comments (`` #`` per pip) and surrounding whitespace.
-        line = raw.split(" #", 1)[0].strip() if " #" in raw else raw.strip()
+    for lineno, raw in _logical_lines(content):
+        line = raw.strip()
         if line and not line.startswith("#"):
-            _check_requirement_line(line, i, includes, r, trusted)
+            _check_requirement_line(line, lineno, includes, r, trusted)
 
     if includes:
         r.info["includes"] = includes
@@ -57,18 +102,27 @@ def _check_requirement_line(
     line: str, lineno: int, includes: list[str], r: ValidationResult, trusted: frozenset
 ) -> None:
     """Classify and validate a single non-blank, non-comment requirements line."""
-    if line.startswith("-"):
-        _check_option(line, lineno, includes, r, trusted)
-        return
-
+    # URL / VCS / editable installs first, so `-e`/`--editable` lines are
+    # credential-scanned rather than swallowed by the generic option branch.
     if _URL_REQUIREMENT_RE.match(line):
         _check_url_requirement(line, lineno, r)
         return
 
+    if line.startswith("-"):
+        _check_option(line, lineno, includes, r, trusted)
+        return
+
     r.info["requirements"] += 1
-    if not is_valid_pep508(line):
+    # Validate the requirement spec only -- drop trailing per-requirement
+    # options (`--hash` etc.), which are not part of the PEP 508 grammar.
+    spec = _requirement_spec(line)
+    if not is_valid_pep508(spec):
         r.add_error(f"invalid requirement: {line!r}", "REQ_INVALID", line=lineno)
-    elif not _PINNED_RE.search(line) and ";" not in line:
+        return
+    # Detect the pin on the requirement, ignoring any `==` inside an environment
+    # marker (the text after `;`).
+    marker_free = spec.split(";", 1)[0]
+    if not _PINNED_RE.search(marker_free):
         r.add_warning(f"unpinned dependency {line!r} (no == pin)", "REQ_UNPINNED", line=lineno)
 
 
@@ -121,7 +175,14 @@ def _check_index_url(
     except ValueError:
         return
     if parts.username or parts.password:
-        userinfo_ok = _is_env_ref(parts.username) and (parts.password is None or _is_env_ref(parts.password))
+        scheme = parts.scheme.lower()
+        ssh_like = scheme == "ssh" or scheme.endswith("+ssh")
+        if ssh_like and parts.username and parts.password is None:
+            # `git@host` in an SSH VCS URL is the standard, secret-free
+            # convention -- a username with no password, not a credential.
+            userinfo_ok = True
+        else:
+            userinfo_ok = _is_env_ref(parts.username) and (parts.password is None or _is_env_ref(parts.password))
         if not userinfo_ok:
             r.add_error(
                 f"plaintext credential in {opt} ({_redact(url)}) -- use an env var reference",
