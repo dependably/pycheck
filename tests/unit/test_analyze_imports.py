@@ -233,18 +233,16 @@ class TestAnalyzeImports:
         assert len(unused_imports) == 0
 
     def test_analyze_star_import(self):
-        """Test analysis of star imports (should be treated as used)."""
+        """Star imports expose an unknowable set of names, so they can never be
+        proven unused and must always be treated as used (never auto-removed)."""
         imports = [ImportInfo("math", ["*"], line_number=1, is_from_import=True)]
-        references = {"sin", "cos", "pi"}  # These could come from star import
+        references: set = set()  # Nothing references the star import by name.
 
         used_imports, unused_imports = self.checker.analyze_imports(imports, references)
 
-        # Star imports are typically complex to analyze,
-        # but our current implementation checks if "*" is in references
-        # which it isn't, so it would be marked as unused
-        # This might need special handling in the actual implementation
-        assert len(unused_imports) == 1
-        assert unused_imports[0].names == ["*"]
+        assert len(unused_imports) == 0
+        assert len(used_imports) == 1
+        assert used_imports[0].names == ["*"]
 
     def test_analyze_preserves_import_info(self):
         """Test that analysis preserves all ImportInfo attributes."""
