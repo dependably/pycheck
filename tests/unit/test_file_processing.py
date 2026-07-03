@@ -457,3 +457,21 @@ class TestEncodingAndTraversal:
         assert "import os" not in (tmp_path / "real.py").read_text()  # ours cleaned
         for sub in (".venv", "venv", "node_modules", ".git"):
             assert (tmp_path / sub / "vendored.py").read_text() == untouched
+
+
+class TestDirectoryCleanupResilience:
+    """#9: one bad file must not abort a directory run; the rest still process."""
+
+    def test_bad_file_does_not_abort_others(self, tmp_path):
+        checker = ImportChecker(check_mode=False)
+        (tmp_path / "good1.py").write_text("import os\nprint(1)\n")
+        (tmp_path / "bad.py").write_text("def broken(:\n")
+        (tmp_path / "good2.py").write_text("import sys\nprint(2)\n")
+        with patch("builtins.print"):
+            with pytest.raises(ImportCheckerError) as exc:
+                checker.process_directory(tmp_path)
+        # The failure is reported...
+        assert "could not be processed" in str(exc.value)
+        # ...but both good files were still cleaned (not skipped).
+        assert "import os" not in (tmp_path / "good1.py").read_text()
+        assert "import sys" not in (tmp_path / "good2.py").read_text()
