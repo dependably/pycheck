@@ -243,6 +243,9 @@ class _NameReferenceVisitor(ast.NodeVisitor):
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         # `x: "Decimal"` — the annotation may be a string forward reference.
         self._collect_string_annotations(node.annotation)
+        # `__all__: list = [...]` — an annotated assignment re-exports too.
+        if isinstance(node.target, ast.Name) and node.target.id == "__all__" and node.value is not None:
+            self._collect_all_exports(node.value)
         self.generic_visit(node)
 
     def visit_arg(self, node: ast.arg) -> None:
@@ -589,12 +592,14 @@ class ImportChecker:
         original_line = lines[start_idx]
         all_names = unused_from_line[0].all_names_on_line
         all_aliases = unused_from_line[0].all_aliases_on_line
-        unused_names = {imp.names[0] for imp in unused_from_line}
+        # Match on the (name, alias) pair so `path as p1, path as p2` — which
+        # share a name but are distinct imports — drop only the unused alias.
+        unused_pairs = {(imp.names[0], imp.alias) for imp in unused_from_line}
 
         remaining_names = [
             f"{name} as {all_aliases[i]}" if all_aliases[i] else name
             for i, name in enumerate(all_names)
-            if name not in unused_names
+            if (name, all_aliases[i]) not in unused_pairs
         ]
 
         # Drop every continuation line of the statement.
@@ -645,12 +650,14 @@ class ImportChecker:
         original_line = lines[start_idx]
         all_names = unused_on_line[0].all_names_on_line
         all_aliases = unused_on_line[0].all_aliases_on_line
-        unused_modules = {imp.module for imp in unused_on_line}
+        # Match on the (module, alias) pair so `import os as a, os as b` drops
+        # only the unused alias rather than every occurrence of the module.
+        unused_pairs = {(imp.module, imp.alias) for imp in unused_on_line}
 
         remaining = [
             f"{name} as {all_aliases[i]}" if all_aliases[i] else name
             for i, name in enumerate(all_names)
-            if name not in unused_modules
+            if (name, all_aliases[i]) not in unused_pairs
         ]
 
         # Drop every continuation line of the statement.
@@ -754,39 +761,6 @@ class ImportChecker:
             idx += 1
         return len(lines) - 1
 
-    def _is_complete_import_statement(self, lines: List[str], line_idx: int) -> bool:
-        """
-        Check if an import statement is complete at the given line.
-
-        Args:
-            lines: List of file lines
-            line_idx: Index of line to check
-
-        Returns:
-            True if the import statement is complete
-        """
-        if line_idx >= len(lines):
-            return True
-
-        line = lines[line_idx].strip()
-
-        # Check for obvious continuation indicators
-        if line.endswith("\\") or line.endswith(","):
-            return False
-
-        # Check if next line looks like a continuation of import
-        if line_idx + 1 < len(lines):
-            next_line = lines[line_idx + 1].strip()
-            # If next line starts with whitespace and contains import-like content
-            if (
-                next_line
-                and lines[line_idx + 1].startswith((" ", "\t"))
-                and not next_line.startswith(("import ", "from "))
-            ):
-                return False
-
-        return True
-
     @staticmethod
     def _format_import(import_info: ImportInfo) -> str:
         """Render an ImportInfo back to its source-like statement string."""
@@ -798,20 +772,28 @@ class ImportChecker:
             import_str += f" as {import_info.alias}"
         return import_str
 
-    def _read_and_parse(self, file_path: Path) -> Tuple[str, ast.AST]:
-        """Read a file (UTF-8 with latin-1 fallback) and parse it into an AST."""
+    def _read_and_parse(self, file_path: Path) -> Tuple[str, ast.AST, str]:
+        """Read a file and parse it into an AST.
+
+        Reads UTF-8 with a latin-1 fallback, and returns the encoding that
+        succeeded so cleanup can write the file back the same way instead of
+        re-encoding it as UTF-8. ``newline=""`` preserves the original line
+        endings (CRLF is not silently rewritten to LF).
+        """
+        encoding = "utf-8"
         try:
-            with open(file_path, "r", encoding="utf-8") as file:
+            with open(file_path, "r", encoding="utf-8", newline="") as file:
                 content = file.read()
-            tree = ast.parse(content, filename=str(file_path))
         except UnicodeDecodeError:
             # Retry with a permissive encoding if UTF-8 fails.
-            with open(file_path, "r", encoding="latin-1") as file:
+            encoding = "latin-1"
+            with open(file_path, "r", encoding="latin-1", newline="") as file:
                 content = file.read()
+        try:
             tree = ast.parse(content, filename=str(file_path))
         except SyntaxError as e:
             raise ImportCheckerError(f"Syntax error in {file_path}: {e}")
-        return content, tree
+        return content, tree, encoding
 
     def _report_check(self, file_path: Path, used_imports: List[ImportInfo], unused_imports: List[ImportInfo]) -> None:
         """Print read-only analysis results for one file."""
@@ -830,7 +812,13 @@ class ImportChecker:
             for import_info in used_imports:
                 print(f"    Line {import_info.line_number}: {self._format_import(import_info)}")
 
-    def _report_cleanup(self, file_path: Path, content: str, unused_imports: List[ImportInfo]) -> None:
+    def _report_cleanup(
+        self,
+        file_path: Path,
+        content: str,
+        unused_imports: List[ImportInfo],
+        encoding: str = "utf-8",
+    ) -> None:
         """Remove unused imports from a file (with backup) and print results."""
         if not self.quiet:
             print(f"Cleaning: {file_path}")
@@ -853,7 +841,9 @@ class ImportChecker:
             shutil.copy2(file_path, backup_path)
 
             modified_content = self.remove_unused_imports(content, removable)
-            with open(file_path, "w", encoding="utf-8") as file:
+            # Write back with the encoding we read and without newline
+            # translation, so line endings and non-UTF-8 bytes are preserved.
+            with open(file_path, "w", encoding=encoding, newline="") as file:
                 file.write(modified_content)
 
             if not self.quiet:
@@ -892,7 +882,7 @@ class ImportChecker:
                 self.log_verbose(f"Skipping non-Python file: {file_path}")
                 return
 
-            content, tree = self._read_and_parse(file_path)
+            content, tree, encoding = self._read_and_parse(file_path)
 
             imports = self.extract_imports_from_ast(tree)
             references = self.extract_name_references(tree)
@@ -907,12 +897,32 @@ class ImportChecker:
             if self.check_mode:
                 self._report_check(file_path, used_imports, unused_imports)
             else:
-                self._report_cleanup(file_path, content, unused_imports)
+                self._report_cleanup(file_path, content, unused_imports, encoding)
 
         except PermissionError as e:
             raise ImportCheckerError(f"Permission denied accessing file {file_path}: {e}")
         except Exception as e:
             raise ImportCheckerError(f"Error processing file {file_path}: {e}")
+
+    # Directory names never scanned during a recursive walk (in addition to any
+    # dot-prefixed / hidden directory).
+    _EXCLUDED_DIRS = frozenset({"venv", "node_modules", "site-packages", "__pycache__"})
+
+    @staticmethod
+    def _is_excluded_path(file_path: Path, root: Path) -> bool:
+        """True if ``file_path`` lies under a hidden or vendored directory of ``root``.
+
+        Only directory components *below* the target are considered, so pointing
+        the tool at a path that happens to sit under a dot-directory still works.
+        """
+        try:
+            rel = file_path.relative_to(root)
+        except ValueError:
+            return False
+        for part in rel.parts[:-1]:  # directory components, excluding the filename
+            if part.startswith(".") or part in ImportChecker._EXCLUDED_DIRS:
+                return True
+        return False
 
     def process_directory(self, directory_path: Path, recursive: bool = True) -> None:
         """
@@ -934,11 +944,16 @@ class ImportChecker:
             if not directory_path.is_dir():
                 raise ImportCheckerError(f"Path is not a directory: {directory_path}")
 
-            # Get pattern for finding Python files
-            pattern = "**/*.py" if recursive else "*.py"
-
-            # Process all Python files
-            python_files = list(directory_path.glob(pattern))
+            # Find Python source files (.py and .pyw), skipping hidden and
+            # virtualenv/vendor directories so cleanup never rewrites files the
+            # project does not own (e.g. .venv, site-packages).
+            patterns = ("**/*.py", "**/*.pyw") if recursive else ("*.py", "*.pyw")
+            python_files = sorted(
+                f
+                for pattern in patterns
+                for f in directory_path.glob(pattern)
+                if not self._is_excluded_path(f, directory_path)
+            )
 
             if not python_files:
                 if not self.quiet:
