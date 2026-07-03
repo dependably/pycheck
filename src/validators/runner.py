@@ -10,6 +10,7 @@ validated at all (no artifacts found, or every artifact skipped).
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -31,33 +32,102 @@ except ImportError:  # pragma: no cover - import shim
 # Validator signature: takes file text, returns a ValidationResult.
 _Validator = Callable[[str], ValidationResult]
 
+# Finding codes that describe an operational condition (nothing was validated),
+# not a validation finding. They are reported but never feed the --fail-on gate.
+_OPERATIONAL_CODES = frozenset({"skipped-artifact", "unreadable-file", "no-artifacts", "all-skipped"})
 
-def discover_config_files(target: Path) -> List[Tuple[Path, _Validator]]:
-    """Return existing config artifacts under ``target`` paired with a validator.
+# Directories never descended into during a recursive validate walk (vendored /
+# cache / build output). ``.pip`` is intentionally NOT excluded so the
+# conventional ``.pip/pip.conf`` location is still discovered.
+_EXCLUDED_WALK_DIRS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        ".venv",
+        "venv",
+        "env",
+        "node_modules",
+        "site-packages",
+        "__pycache__",
+        ".tox",
+        ".nox",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".eggs",
+        "build",
+        "dist",
+        ".idea",
+        ".vscode",
+    }
+)
 
-    If ``target`` is a file, its parent directory is scanned.
-    """
-    directory = target if target.is_dir() else target.parent
+
+def _validator_for_file(path: Path) -> Optional[_Validator]:
+    """Return the validator for a config file by its name, or ``None``."""
+    name = path.name
+    if name == "pyproject.toml":
+        return validate_pyproject
+    if name in ("pip.conf", "pip.ini"):
+        return validate_pip_conf
+    if name.startswith("requirements") and name.endswith(".txt"):
+        return validate_requirements
+    return None
+
+
+def _discover_in_dir(directory: Path) -> List[Tuple[Path, _Validator]]:
+    """Discover the recognized config artifacts directly inside ``directory``."""
     found: List[Tuple[Path, _Validator]] = []
-
     pyproject = directory / "pyproject.toml"
     if pyproject.is_file():
         found.append((pyproject, validate_pyproject))
-
-    for pip_conf in (directory / "pip.conf", directory / "pip.ini", directory / ".pip" / "pip.conf"):
+    for name in ("pip.conf", "pip.ini"):
+        pip_conf = directory / name
         if pip_conf.is_file():
             found.append((pip_conf, validate_pip_conf))
-
     for req in sorted(directory.glob("requirements*.txt")):
         if req.is_file():
             found.append((req, validate_requirements))
+    return found
 
+
+def discover_config_files(target: Path, recursive: bool = True) -> List[Tuple[Path, _Validator]]:
+    """Return existing config artifacts under ``target`` paired with a validator.
+
+    A file ``target`` validates exactly that file (when it is a recognized
+    artifact). A directory ``target`` is scanned for artifacts; with
+    ``recursive`` (the default) the whole tree is walked, skipping vendored and
+    cache directories, so artifacts in subprojects are not silently missed.
+    """
+    if not target.is_dir():
+        validator = _validator_for_file(target) if target.is_file() else None
+        return [(target, validator)] if validator else []
+
+    if not recursive:
+        directories = [target]
+        pip_dir = target / ".pip"
+        if pip_dir.is_dir():
+            directories.append(pip_dir)
+    else:
+        directories = []
+        for dirpath, dirnames, _files in os.walk(target):
+            dirnames[:] = sorted(d for d in dirnames if d not in _EXCLUDED_WALK_DIRS)
+            directories.append(Path(dirpath))
+
+    found: List[Tuple[Path, _Validator]] = []
+    seen: set = set()
+    for directory in directories:
+        for path, validator in _discover_in_dir(directory):
+            if path not in seen:
+                seen.add(path)
+                found.append((path, validator))
     return found
 
 
 def run_validators(
     target: Path,
     *,
+    recursive: bool = True,
     allowed_hosts: Optional[Sequence[str]] = None,
     config_path: Optional[Path] = None,
     output_format: str = "human",
@@ -82,12 +152,14 @@ def run_validators(
     json_mode = output_format == "json"
     if allowed_hosts is None:
         allowed_hosts = resolve_allowed_hosts(target, config_path)
-    files = discover_config_files(target)
+    files = discover_config_files(target, recursive)
 
     if not files:
         return _report_no_artifacts(target, json_mode)
 
-    findings, total_errors, total_warnings, total_skipped = _collect_results(files, allowed_hosts, json_mode)
+    findings, total_errors, total_warnings, total_skipped, total_unreadable = _collect_results(
+        files, allowed_hosts, json_mode
+    )
 
     if not json_mode:
         print(
@@ -95,12 +167,18 @@ def run_validators(
             f"{total_warnings} warning(s), {total_skipped} skipped"
         )
 
-    exit_code = _resolve_exit_code(target, len(files), total_errors, total_skipped, findings, json_mode)
+    exit_code = _resolve_exit_code(
+        target, len(files), total_errors, total_skipped, total_unreadable, findings, json_mode
+    )
 
     # The unified --fail-on gate is additive: escalate a clean run to a finding
     # (exit 1) if any rule trips; never downgrade an existing error exit.
-    if exit_code == 0 and fail_on and gate_trips(list(findings), list(fail_on)):
-        exit_code = 1
+    # Operational findings (skipped/unreadable/no-artifacts) are excluded — the
+    # gate rates validation findings, not environment limitations.
+    if exit_code == 0 and fail_on:
+        gate_findings = [f for f in findings if f.get("code") not in _OPERATIONAL_CODES]
+        if gate_trips(gate_findings, list(fail_on)):
+            exit_code = 1
 
     if json_mode:
         emit_json(build_json_report(target, len(files), findings, "config", exit_code))
@@ -128,12 +206,16 @@ def _collect_results(
     files: List[Tuple[Path, _Validator]],
     allowed_hosts: Sequence[str],
     json_mode: bool,
-) -> Tuple[List[Dict[str, Any]], int, int, int]:
-    """Validate each artifact; return (findings, errors, warnings, skipped)."""
+) -> Tuple[List[Dict[str, Any]], int, int, int, int]:
+    """Validate each artifact.
+
+    Returns ``(findings, errors, warnings, skipped, unreadable)``.
+    """
     findings: List[Dict[str, Any]] = []
     total_errors = 0
     total_warnings = 0
     total_skipped = 0
+    total_unreadable = 0
 
     for path, validator in files:
         try:
@@ -154,6 +236,7 @@ def _collect_results(
                 }
             )
             total_errors += 1
+            total_unreadable += 1
             continue
 
         result = _invoke(validator, content, allowed_hosts, path)
@@ -165,7 +248,7 @@ def _collect_results(
         if not json_mode:
             _print_result(path, result)
 
-    return findings, total_errors, total_warnings, total_skipped
+    return findings, total_errors, total_warnings, total_skipped, total_unreadable
 
 
 def _resolve_exit_code(
@@ -173,24 +256,26 @@ def _resolve_exit_code(
     file_count: int,
     total_errors: int,
     total_skipped: int,
+    total_unreadable: int,
     findings: List[Dict[str, Any]],
     json_mode: bool,
 ) -> int:
-    """Derive the process exit code (and report the all-skipped failure class).
+    """Derive the process exit code (and report the nothing-validated failure).
 
-    Every discovered artifact being skipped (e.g. tomllib/tomli unavailable on
-    Python < 3.11) means nothing was actually validated -- the same operational
-    failure class as finding no artifacts at all, so it is exit 2 (operational
-    error), not 1 (a finding) and not 0 (a pass).
+    When every discovered artifact was skipped (e.g. tomllib/tomli unavailable
+    on Python < 3.11) OR unreadable (encoding/permission), nothing was actually
+    validated -- the same operational failure class as finding no artifacts at
+    all, so it is exit 2 (operational error), not 1 (a finding) and not 0 (a
+    pass). Only when at least one artifact was validated do real errors gate at
+    exit 1.
     """
-    if total_errors:
-        return 1
-    if total_skipped != file_count:
-        return 0
+    validated = file_count - total_skipped - total_unreadable
+    if validated > 0:
+        return 1 if total_errors else 0
 
     message = (
-        f"all {file_count} discovered config artifact(s) were skipped "
-        "(validator unavailable); nothing was actually validated"
+        f"none of the {file_count} discovered config artifact(s) could be validated "
+        "(all skipped or unreadable); nothing was actually validated"
     )
     print(f"Error: {message} at: {target}", file=sys.stderr)
     if json_mode:

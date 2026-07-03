@@ -944,31 +944,48 @@ class ImportChecker:
             if not directory_path.is_dir():
                 raise ImportCheckerError(f"Path is not a directory: {directory_path}")
 
-            # Find Python source files (.py and .pyw), skipping hidden and
-            # virtualenv/vendor directories so cleanup never rewrites files the
-            # project does not own (e.g. .venv, site-packages).
-            patterns = ("**/*.py", "**/*.pyw") if recursive else ("*.py", "*.pyw")
-            python_files = sorted(
-                f
-                for pattern in patterns
-                for f in directory_path.glob(pattern)
-                if not self._is_excluded_path(f, directory_path)
-            )
-
+            python_files = self._discover_python_files(directory_path, recursive)
             if not python_files:
                 if not self.quiet:
                     print(f"No Python files found in: {directory_path}")
                 return
 
             self.log_verbose(f"Found {len(python_files)} Python files")
-
-            for file_path in python_files:
-                self.process_file(file_path)
+            self._process_files(python_files)
 
         except PermissionError as e:
             raise ImportCheckerError(f"Permission denied accessing directory {directory_path}: {e}")
         except Exception as e:
             raise ImportCheckerError(f"Error processing directory {directory_path}: {e}")
+
+    def _discover_python_files(self, directory_path: Path, recursive: bool) -> List[Path]:
+        """Return sorted .py/.pyw files under a directory, skipping vendored dirs."""
+        patterns = ("**/*.py", "**/*.pyw") if recursive else ("*.py", "*.pyw")
+        return sorted(
+            f
+            for pattern in patterns
+            for f in directory_path.glob(pattern)
+            if not self._is_excluded_path(f, directory_path)
+        )
+
+    def _process_files(self, python_files: List[Path]) -> None:
+        """Process every file, surfacing per-file failures together at the end.
+
+        One unreadable / syntax-error file must not abort the run and leave the
+        rest unprocessed, so failures are collected and raised as a single
+        operational error (exit 2) only after every file has been attempted.
+        """
+        failures: List[str] = []
+        for file_path in python_files:
+            try:
+                self.process_file(file_path)
+            except ImportCheckerError as e:
+                failures.append(str(e))
+                if not self.quiet:
+                    print(f"  Skipping {file_path}: {e}")
+
+        if failures:
+            raise ImportCheckerError(f"{len(failures)} file(s) could not be processed: " + "; ".join(failures))
 
     def run(self, target_path: Path, recursive: bool = True) -> None:
         """
@@ -1117,6 +1134,7 @@ def _run_validate(
     config: Optional[Path] = None,
     output_format: str = "human",
     fail_on: Optional[List[Tuple[str, str]]] = None,
+    recursive: bool = True,
 ) -> int:
     """Dispatch --validate to the validators package (lazy import)."""
     try:
@@ -1127,7 +1145,9 @@ def _run_validate(
         # In json mode keep stdout clean; status goes to stderr.
         stream = sys.stderr if output_format == "json" else sys.stdout
         print(f"Validating config artifacts under: {target}", file=stream)
-    exit_code: int = run_validators(target, config_path=config, output_format=output_format, fail_on=fail_on)
+    exit_code: int = run_validators(
+        target, recursive=recursive, config_path=config, output_format=output_format, fail_on=fail_on
+    )
     return exit_code
 
 
@@ -1188,7 +1208,7 @@ def main() -> int:
             parser.error(str(exc))
 
         if args.validate:
-            return _run_validate(args.target, args.verbose, args.config, args.format, fail_on_rules)
+            return _run_validate(args.target, args.verbose, args.config, args.format, fail_on_rules, args.recursive)
         return _run_import_check(args, fail_on_rules)
 
     # Operational / internal errors are NOT findings: per the suite convention

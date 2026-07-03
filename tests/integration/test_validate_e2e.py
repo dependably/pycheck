@@ -186,3 +186,53 @@ class TestBomHandling:
         from validators.runner import run_validators
 
         assert run_validators(tmp_path) == 0
+
+
+class TestRecursionAndExitCodes:
+    """#7 recursion / file-target and #8 exit-code conventions."""
+
+    def _run(self, target, **kw):
+        from validators.runner import run_validators
+
+        return run_validators(target, **kw)
+
+    def test_recursive_finds_nested_artifact(self, tmp_path):
+        nested = tmp_path / "services" / "api"
+        nested.mkdir(parents=True)
+        (nested / "requirements.txt").write_text("requests==2.0\n")
+        assert self._run(tmp_path) == 0  # found and validated
+
+    def test_recursive_skips_vendored_dirs(self, tmp_path):
+        venv = tmp_path / ".venv"
+        venv.mkdir()
+        (venv / "requirements.txt").write_text("--trusted-host evil.example\n")
+        # Only the vendored artifact exists; it must be skipped -> nothing to
+        # validate -> operational exit 2 (not 1 from the planted trusted-host).
+        assert self._run(tmp_path) == 2
+
+    def test_non_recursive_misses_nested(self, tmp_path):
+        nested = tmp_path / "sub"
+        nested.mkdir()
+        (nested / "requirements.txt").write_text("requests==2.0\n")
+        assert self._run(tmp_path, recursive=False) == 2
+
+    def test_file_target_validates_only_that_file(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("requests==2.0\n")
+        (tmp_path / "requirements-bad.txt").write_text("--trusted-host evil.example\n")
+        # Pointing at the clean file must not pick up the sibling's error.
+        assert self._run(tmp_path / "requirements.txt") == 0
+
+    def test_all_unreadable_is_operational_exit_two(self, tmp_path):
+        (tmp_path / "requirements.txt").write_bytes(b"\xff\xff\xffnope")
+        assert self._run(tmp_path) == 2
+
+    def test_one_unreadable_among_valid_is_finding_exit_one(self, tmp_path):
+        (tmp_path / "requirements.txt").write_bytes(b"\xff\xff\xffnope")
+        (tmp_path / "requirements-ok.txt").write_text("requests==2.0\n")
+        assert self._run(tmp_path) == 1
+
+    def test_unpinned_warning_does_not_trip_operational_gate(self, tmp_path):
+        # A clean warning-only run with a severity=low gate trips (that is the
+        # documented additive behavior); but an operational skip must not.
+        (tmp_path / "requirements.txt").write_text("requests>=2.0\n")  # unpinned warning
+        assert self._run(tmp_path, fail_on=[("severity", "low")]) == 1

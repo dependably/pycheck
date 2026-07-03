@@ -257,7 +257,9 @@ class TestMainFunction:
             result = main()
 
         assert result == 0
-        mock_run_validators.assert_called_once_with(tmp_path, config_path=None, output_format="human", fail_on=[])
+        mock_run_validators.assert_called_once_with(
+            tmp_path, recursive=True, config_path=None, output_format="human", fail_on=[]
+        )
 
     @patch("validators.runner.run_validators")
     def test_main_validate_propagates_failure(self, mock_run_validators, tmp_path):
@@ -280,7 +282,9 @@ class TestMainFunction:
             result = main()
 
         assert result == 0
-        mock_run_validators.assert_called_once_with(tmp_path, config_path=cfg, output_format="human", fail_on=[])
+        mock_run_validators.assert_called_once_with(
+            tmp_path, recursive=True, config_path=cfg, output_format="human", fail_on=[]
+        )
 
     def test_main_check_exits_nonzero_on_unused(self, tmp_path):
         """--check returns 1 when unused imports are found (gates CI/hooks)."""
