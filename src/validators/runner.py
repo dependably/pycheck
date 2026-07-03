@@ -103,25 +103,33 @@ def discover_config_files(target: Path, recursive: bool = True) -> List[Tuple[Pa
         validator = _validator_for_file(target) if target.is_file() else None
         return [(target, validator)] if validator else []
 
-    if not recursive:
-        directories = [target]
-        pip_dir = target / ".pip"
-        if pip_dir.is_dir():
-            directories.append(pip_dir)
-    else:
-        directories = []
-        for dirpath, dirnames, _files in os.walk(target):
-            dirnames[:] = sorted(d for d in dirnames if d not in _EXCLUDED_WALK_DIRS)
-            directories.append(Path(dirpath))
-
     found: List[Tuple[Path, _Validator]] = []
     seen: set = set()
-    for directory in directories:
+    for directory in _dirs_to_scan(target, recursive):
         for path, validator in _discover_in_dir(directory):
             if path not in seen:
                 seen.add(path)
                 found.append((path, validator))
     return _follow_requirement_includes(found)
+
+
+def _dirs_to_scan(target: Path, recursive: bool) -> List[Path]:
+    """Directories to scan for artifacts under a directory ``target``.
+
+    Non-recursive scans the top level plus the conventional ``.pip`` subdir;
+    recursive walks the whole tree, pruning vendored/cache directories.
+    """
+    if not recursive:
+        directories = [target]
+        pip_dir = target / ".pip"
+        if pip_dir.is_dir():
+            directories.append(pip_dir)
+        return directories
+    directories = []
+    for dirpath, dirnames, _files in os.walk(target):
+        dirnames[:] = sorted(d for d in dirnames if d not in _EXCLUDED_WALK_DIRS)
+        directories.append(Path(dirpath))
+    return directories
 
 
 def _follow_requirement_includes(
