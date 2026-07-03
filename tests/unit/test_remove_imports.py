@@ -595,3 +595,23 @@ class TestCleanupCorruptionRegression:
         # os and sys unused, requests used; the >2 blank seam collapses to 2.
         assert "import requests" in result
         assert "\n\n\n" not in result
+
+    # --- #13: __all__ via annotated assignment ------------------------------
+
+    def test_all_via_annassign_marks_reexport_used(self):
+        code = 'from decimal import Decimal\n__all__: list = ["Decimal"]\n'
+        assert self._clean(code) == code  # Decimal is a re-export -> not removed
+
+    # --- #14: duplicate names/aliases matched by position -------------------
+
+    def test_from_import_duplicate_alias_partial(self):
+        code = "from os import path as p1, path as p2\nprint(p1)\n"
+        result = self._clean(code)
+        assert "from os import path as p1" in result
+        assert "p2" not in result
+
+    def test_plain_import_duplicate_alias_partial(self):
+        code = "import os as a, os as b\nprint(a)\n"
+        result = self._clean(code)
+        assert "import os as a" in result
+        assert " as b" not in result

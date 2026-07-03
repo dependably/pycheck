@@ -403,3 +403,57 @@ class TestRunMethod:
                 self.checker.run(test_file)
 
         assert "Unexpected error during processing" in str(excinfo.value)
+
+
+class TestEncodingAndTraversal:
+    """Regression tests for cleanup encoding/newline preservation and the
+    directory-walk exclusions."""
+
+    def test_cleanup_preserves_crlf_line_endings(self, tmp_path):
+        # #15: reading with universal newlines used to rewrite the whole file to
+        # LF; cleanup must keep CRLF on the lines it does not touch.
+        checker = ImportChecker(check_mode=False)
+        test_file = tmp_path / "crlf.py"
+        test_file.write_bytes(b"import os\r\nimport sys\r\n\r\nprint(os.getcwd())\r\n")
+        with patch("builtins.print"):
+            checker.process_file(test_file)
+        data = test_file.read_bytes()
+        assert b"\r\n" in data
+        assert b"\n" not in data.replace(b"\r\n", b"")  # no bare LF introduced
+        assert b"import sys" not in data
+
+    def test_cleanup_preserves_latin1_encoding(self, tmp_path):
+        # #15: a latin-1 file must not be re-encoded to UTF-8 on write.
+        checker = ImportChecker(check_mode=False)
+        test_file = tmp_path / "latin1.py"
+        test_file.write_bytes(b"# -*- coding: latin-1 -*-\nimport os\nx = '\xe9'\n")
+        with patch("builtins.print"):
+            checker.process_file(test_file)
+        data = test_file.read_bytes()
+        assert b"\xe9" in data  # the latin-1 byte survives (not UTF-8 re-encoded)
+        assert b"import os" not in data
+
+    def test_directory_walk_processes_pyw(self, tmp_path):
+        # #16: .pyw files are discovered in a recursive walk.
+        checker = ImportChecker(check_mode=False)
+        pyw = tmp_path / "sub" / "w.pyw"
+        pyw.parent.mkdir()
+        pyw.write_text("import os\nprint('hi')\n")
+        with patch("builtins.print"):
+            checker.process_directory(tmp_path)
+        assert "import os" not in pyw.read_text()
+
+    def test_directory_walk_skips_hidden_and_venv(self, tmp_path):
+        # #16: hidden and virtualenv/vendor dirs are never rewritten.
+        checker = ImportChecker(check_mode=False)
+        (tmp_path / "real.py").write_text("import os\nprint('hi')\n")
+        untouched = "import os\nprint('hi')\n"
+        for sub in (".venv", "venv", "node_modules", ".git"):
+            d = tmp_path / sub
+            d.mkdir()
+            (d / "vendored.py").write_text(untouched)
+        with patch("builtins.print"):
+            checker.process_directory(tmp_path)
+        assert "import os" not in (tmp_path / "real.py").read_text()  # ours cleaned
+        for sub in (".venv", "venv", "node_modules", ".git"):
+            assert (tmp_path / sub / "vendored.py").read_text() == untouched
