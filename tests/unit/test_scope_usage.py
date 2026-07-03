@@ -90,6 +90,9 @@ _NO_FALSE_POSITIVE = {
         "from typing import cast\nfrom decimal import Decimal\n" 'def f(x):\n    return cast("Decimal", x)\n'
     ),
     "walrus_in_comprehension": "import os\nr = [os and (os := i) for i in [1, 2]]\n",
+    "cast_keyword_forward_ref": (
+        "from typing import cast\nfrom decimal import Decimal\n" 'def f(x):\n    return cast(typ="Decimal", val=x)\n'
+    ),
 }
 
 

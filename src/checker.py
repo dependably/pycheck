@@ -218,6 +218,23 @@ class ImportInfo:
         return f"ImportInfo(module='{self.module}', names={self.names}, alias='{self.alias}', line={self.line_number})"
 
 
+def _cast_type_arg(node: ast.Call) -> Optional[ast.expr]:
+    """The type argument of a ``cast(...)`` call (positional or ``typ=``), else None.
+
+    Matches both ``cast(...)`` and ``x.cast(...)``; the type may be a string
+    forward reference whose imports must not be removed as unused.
+    """
+    func = node.func
+    is_cast = (isinstance(func, ast.Name) and func.id == "cast") or (
+        isinstance(func, ast.Attribute) and func.attr == "cast"
+    )
+    if not is_cast:
+        return None
+    if node.args:
+        return node.args[0]
+    return next((kw.value for kw in node.keywords if kw.arg == "typ"), None)
+
+
 class _NameReferenceVisitor(ast.NodeVisitor):
     """Collect names referenced (loaded) in a module, plus `__all__` exports.
 
@@ -264,13 +281,11 @@ class _NameReferenceVisitor(ast.NodeVisitor):
     visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
 
     def visit_Call(self, node: ast.Call) -> None:
-        # `cast("Decimal", x)` / `typing.cast(...)` — first arg is a forward ref.
-        func = node.func
-        is_cast = (isinstance(func, ast.Name) and func.id == "cast") or (
-            isinstance(func, ast.Attribute) and func.attr == "cast"
-        )
-        if is_cast and node.args:
-            self._collect_string_annotations(node.args[0])
+        # `cast("Decimal", x)` / `typing.cast(...)` — the type arg is a forward
+        # reference, whether passed positionally or as ``typ=``.
+        type_arg = _cast_type_arg(node)
+        if type_arg is not None:
+            self._collect_string_annotations(type_arg)
         self.generic_visit(node)
 
     def _collect_string_annotations(self, annotation: ast.expr) -> None:
@@ -459,17 +474,12 @@ class _ScopeModelBuilder:
         self._walk(node.value, scope)
 
     def _walk_Call(self, node: ast.Call, scope: _Scope) -> None:
-        # `cast("Decimal", x)` / `typing.cast(...)` — the first argument is a
+        # `cast("Decimal", x)` / `typing.cast(...)` — the type argument is a
         # string forward reference; protect the names it uses (mirrors the flat
         # pass, so the scoped refinement cannot un-protect what it kept).
-        func = node.func
-        is_cast = (isinstance(func, ast.Name) and func.id == "cast") or (
-            isinstance(func, ast.Attribute) and func.attr == "cast"
-        )
-        if is_cast and node.args:
-            first = node.args[0]
-            if isinstance(first, ast.Constant) and isinstance(first.value, str):
-                self.protected.update(_forward_ref_names(first.value))
+        type_arg = _cast_type_arg(node)
+        if isinstance(type_arg, ast.Constant) and isinstance(type_arg.value, str):
+            self.protected.update(_forward_ref_names(type_arg.value))
         for child in ast.iter_child_nodes(node):
             self._walk(child, scope)
 
