@@ -35,7 +35,7 @@ class ImportCheckerError(Exception):
 TOOL_NAME = "Dependably.pycheck"
 SCHEMA_VERSION = "1.0"
 
-# python-check's internal severities map onto the single shared ladder
+# pycheck's internal severities map onto the single shared ladder
 # (critical > high > moderate > low > info). error->high, warning->low.
 _SEVERITY_LADDER: Dict[str, str] = {"error": "high", "warning": "low"}
 
@@ -218,6 +218,23 @@ class ImportInfo:
         return f"ImportInfo(module='{self.module}', names={self.names}, alias='{self.alias}', line={self.line_number})"
 
 
+def _cast_type_arg(node: ast.Call) -> Optional[ast.expr]:
+    """The type argument of a ``cast(...)`` call (positional or ``typ=``), else None.
+
+    Matches both ``cast(...)`` and ``x.cast(...)``; the type may be a string
+    forward reference whose imports must not be removed as unused.
+    """
+    func = node.func
+    is_cast = (isinstance(func, ast.Name) and func.id == "cast") or (
+        isinstance(func, ast.Attribute) and func.attr == "cast"
+    )
+    if not is_cast:
+        return None
+    if node.args:
+        return node.args[0]
+    return next((kw.value for kw in node.keywords if kw.arg == "typ"), None)
+
+
 class _NameReferenceVisitor(ast.NodeVisitor):
     """Collect names referenced (loaded) in a module, plus `__all__` exports.
 
@@ -264,13 +281,11 @@ class _NameReferenceVisitor(ast.NodeVisitor):
     visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
 
     def visit_Call(self, node: ast.Call) -> None:
-        # `cast("Decimal", x)` / `typing.cast(...)` — first arg is a forward ref.
-        func = node.func
-        is_cast = (isinstance(func, ast.Name) and func.id == "cast") or (
-            isinstance(func, ast.Attribute) and func.attr == "cast"
-        )
-        if is_cast and node.args:
-            self._collect_string_annotations(node.args[0])
+        # `cast("Decimal", x)` / `typing.cast(...)` — the type arg is a forward
+        # reference, whether passed positionally or as ``typ=``.
+        type_arg = _cast_type_arg(node)
+        if type_arg is not None:
+            self._collect_string_annotations(type_arg)
         self.generic_visit(node)
 
     def _collect_string_annotations(self, annotation: ast.expr) -> None:
@@ -322,6 +337,368 @@ class _NameReferenceVisitor(ast.NodeVisitor):
             for elt in value.elts:
                 if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
                     self._references.add(elt.value)
+
+
+class _Scope:
+    """One lexical scope in the scope tree built by :func:`scoped_import_usage`."""
+
+    __slots__ = ("kind", "parent", "bound", "globals", "nonlocals", "loads", "import_lines")
+
+    def __init__(self, kind: str, parent: Optional["_Scope"]) -> None:
+        self.kind = kind  # "module" | "function" | "class" | "comprehension"
+        self.parent = parent
+        self.bound: Set[str] = set()  # names bound in this scope
+        self.globals: Set[str] = set()
+        self.nonlocals: Set[str] = set()
+        self.loads: List[str] = []  # names loaded (read) in this scope
+        # name -> line numbers of import statements binding it in this scope
+        self.import_lines: Dict[str, Set[int]] = {}
+
+
+def _binds_locally(scope: _Scope, name: str) -> bool:
+    """Whether ``name`` is bound in ``scope`` for the purpose of resolving a load.
+
+    In a CLASS body only an import counts as a local binding: a class body runs
+    top-to-bottom and reads the enclosing name until a shadowing statement runs,
+    and we do not track statement order, so a non-import class-body binding must
+    NOT shadow an outer import (that would wrongly mark a used import unused).
+    """
+    if scope.kind == "class":
+        return name in scope.import_lines
+    return name in scope.bound
+
+
+def _resolve_scope(scope: _Scope, name: str) -> Optional[_Scope]:
+    """Resolve a load of ``name`` in ``scope`` to the scope that binds it (LEGB).
+
+    Applies Python's rules: ``global`` jumps to module scope, ``nonlocal`` to the
+    nearest enclosing function binding, and ordinary lookup skips class scopes
+    for anything other than the scope the load occurs in.
+    """
+    if name in scope.globals:
+        module = scope
+        while module.parent is not None:
+            module = module.parent
+        return module if name in module.bound else None
+    if name in scope.nonlocals:
+        return _nearest_function_binding(scope.parent, name)
+    if _binds_locally(scope, name):
+        return scope
+    outer = scope.parent
+    while outer is not None:
+        if outer.kind != "class" and name in outer.bound:
+            return outer
+        outer = outer.parent
+    return None
+
+
+def _nearest_function_binding(start: Optional[_Scope], name: str) -> Optional[_Scope]:
+    """Nearest enclosing function scope that binds ``name`` (for ``nonlocal``)."""
+    scope = start
+    while scope is not None:
+        if scope.kind == "function" and name in scope.bound:
+            return scope
+        scope = scope.parent
+    return None
+
+
+class _ScopeModelBuilder:
+    """Walk an AST building the scope tree used to resolve import usage.
+
+    Deliberately conservative: constructs evaluated in the *enclosing* scope
+    (decorators, default argument values, annotations, class bases, the outermost
+    comprehension iterable) are attributed there, not to the nested scope, so a
+    name shadowed inside the nested scope is never mistaken for the import's use
+    (and vice-versa). Anything not explicitly modelled is treated as a plain load
+    in the current scope, which can only keep an import *used*.
+    """
+
+    def __init__(self) -> None:
+        self.module = _Scope("module", None)
+        self.scopes: List[_Scope] = [self.module]
+        # Names that must always count as used: __all__ exports, string
+        # forward references, and any global/nonlocal-declared name.
+        self.protected: Set[str] = set()
+
+    def build(self, tree: ast.AST) -> None:
+        for stmt in getattr(tree, "body", []):
+            self._walk(stmt, self.module)
+
+    def _new_scope(self, kind: str, parent: _Scope) -> _Scope:
+        scope = _Scope(kind, parent)
+        self.scopes.append(scope)
+        return scope
+
+    def _bind(self, scope: _Scope, name: str) -> None:
+        scope.bound.add(name)
+
+    def _bind_target(self, node: ast.AST, scope: _Scope) -> None:
+        """Record assignment targets as bindings (loading any attribute bases)."""
+        if isinstance(node, ast.Name):
+            self._bind(scope, node.id)
+        elif isinstance(node, (ast.Tuple, ast.List)):
+            for elt in node.elts:
+                self._bind_target(elt, scope)
+        elif isinstance(node, ast.Starred):
+            self._bind_target(node.value, scope)
+        elif isinstance(node, (ast.Attribute, ast.Subscript)):
+            self._walk(node, scope)  # `a.b = x` / `a[b] = x` reads `a`
+
+    def _annotation(self, node: Optional[ast.expr], scope: _Scope) -> None:
+        """Process an annotation: real names load in ``scope``; string forward
+        references contribute protected names."""
+        if node is None:
+            return
+        self._walk(node, scope)
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                self.protected.update(_forward_ref_names(sub.value))
+
+    def _walk(self, node: ast.AST, scope: _Scope) -> None:
+        handler = getattr(self, f"_walk_{type(node).__name__}", None)
+        if handler is not None:
+            handler(node, scope)
+        else:
+            for child in ast.iter_child_nodes(node):
+                self._walk(child, scope)
+
+    # --- leaf references -----------------------------------------------------
+
+    def _walk_Name(self, node: ast.Name, scope: _Scope) -> None:
+        if isinstance(node.ctx, ast.Load):
+            scope.loads.append(node.id)
+        elif isinstance(node.ctx, (ast.Store, ast.Del)):
+            self._bind(scope, node.id)
+
+    def _walk_Attribute(self, node: ast.Attribute, scope: _Scope) -> None:
+        self._walk(node.value, scope)
+
+    def _walk_Call(self, node: ast.Call, scope: _Scope) -> None:
+        # `cast("Decimal", x)` / `typing.cast(...)` — the type argument is a
+        # string forward reference; protect the names it uses (mirrors the flat
+        # pass, so the scoped refinement cannot un-protect what it kept).
+        type_arg = _cast_type_arg(node)
+        if isinstance(type_arg, ast.Constant) and isinstance(type_arg.value, str):
+            self.protected.update(_forward_ref_names(type_arg.value))
+        for child in ast.iter_child_nodes(node):
+            self._walk(child, scope)
+
+    # --- imports -------------------------------------------------------------
+
+    def _walk_Import(self, node: ast.Import, scope: _Scope) -> None:
+        for alias in node.names:
+            name = alias.asname or alias.name.split(".")[0]
+            self._bind(scope, name)
+            scope.import_lines.setdefault(name, set()).add(node.lineno)
+
+    def _walk_ImportFrom(self, node: ast.ImportFrom, scope: _Scope) -> None:
+        if node.module == "__future__":
+            return
+        for alias in node.names:
+            if alias.name == "*":
+                continue
+            name = alias.asname or alias.name
+            self._bind(scope, name)
+            scope.import_lines.setdefault(name, set()).add(node.lineno)
+
+    # --- assignments / augmented / annotated ---------------------------------
+
+    def _walk_Assign(self, node: ast.Assign, scope: _Scope) -> None:
+        self._walk(node.value, scope)
+        for target in node.targets:
+            self._bind_target(target, scope)
+        self._maybe_all_exports(node.targets, node.value)
+
+    def _walk_AugAssign(self, node: ast.AugAssign, scope: _Scope) -> None:
+        if isinstance(node.target, ast.Name):
+            scope.loads.append(node.target.id)  # augmented assignment reads first
+            self._bind(scope, node.target.id)
+        else:
+            self._walk(node.target, scope)
+        self._walk(node.value, scope)
+        self._maybe_all_exports([node.target], node.value)
+
+    def _walk_AnnAssign(self, node: ast.AnnAssign, scope: _Scope) -> None:
+        self._annotation(node.annotation, scope)
+        if node.value is not None:
+            self._walk(node.value, scope)
+        self._bind_target(node.target, scope)
+        if node.value is not None:
+            self._maybe_all_exports([node.target], node.value)
+
+    def _maybe_all_exports(self, targets: List[ast.expr], value: ast.expr) -> None:
+        if any(isinstance(t, ast.Name) and t.id == "__all__" for t in targets):
+            if isinstance(value, (ast.List, ast.Tuple)):
+                for elt in value.elts:
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                        self.protected.add(elt.value)
+
+    # --- comprehensions / loops / with / try ---------------------------------
+
+    def _walk_comprehension_expr(self, node: ast.AST, scope: _Scope, elements: List[ast.expr]) -> None:
+        generators = getattr(node, "generators", [])
+        comp = self._new_scope("comprehension", scope)
+        for i, gen in enumerate(generators):
+            # The outermost iterable is evaluated in the enclosing scope.
+            self._walk(gen.iter, scope if i == 0 else comp)
+            self._bind_target(gen.target, comp)
+            for cond in gen.ifs:
+                self._walk(cond, comp)
+        for element in elements:
+            self._walk(element, comp)
+
+    def _walk_ListComp(self, node: ast.ListComp, scope: _Scope) -> None:
+        self._walk_comprehension_expr(node, scope, [node.elt])
+
+    def _walk_SetComp(self, node: ast.SetComp, scope: _Scope) -> None:
+        self._walk_comprehension_expr(node, scope, [node.elt])
+
+    def _walk_GeneratorExp(self, node: ast.GeneratorExp, scope: _Scope) -> None:
+        self._walk_comprehension_expr(node, scope, [node.elt])
+
+    def _walk_DictComp(self, node: ast.DictComp, scope: _Scope) -> None:
+        self._walk_comprehension_expr(node, scope, [node.key, node.value])
+
+    def _walk_For(self, node: ast.AST, scope: _Scope) -> None:
+        self._walk(node.iter, scope)  # type: ignore[attr-defined]
+        self._bind_target(node.target, scope)  # type: ignore[attr-defined]
+        for child in node.body + node.orelse:  # type: ignore[attr-defined]
+            self._walk(child, scope)
+
+    _walk_AsyncFor = _walk_For
+
+    def _walk_With(self, node: ast.AST, scope: _Scope) -> None:
+        for item in node.items:  # type: ignore[attr-defined]
+            self._walk(item.context_expr, scope)
+            if item.optional_vars is not None:
+                self._bind_target(item.optional_vars, scope)
+        for child in node.body:  # type: ignore[attr-defined]
+            self._walk(child, scope)
+
+    _walk_AsyncWith = _walk_With
+
+    def _walk_ExceptHandler(self, node: ast.ExceptHandler, scope: _Scope) -> None:
+        if node.type is not None:
+            self._walk(node.type, scope)
+        if node.name:
+            self._bind(scope, node.name)
+        for child in node.body:
+            self._walk(child, scope)
+
+    def _walk_Global(self, node: ast.Global, scope: _Scope) -> None:
+        scope.globals.update(node.names)
+        self.protected.update(node.names)
+
+    def _walk_Nonlocal(self, node: ast.Nonlocal, scope: _Scope) -> None:
+        scope.nonlocals.update(node.names)
+        self.protected.update(node.names)
+
+    def _walk_NamedExpr(self, node: ast.AST, scope: _Scope) -> None:
+        self._walk(node.value, scope)  # type: ignore[attr-defined]
+        # PEP 572: a walrus inside a comprehension binds in the nearest enclosing
+        # non-comprehension scope, not the comprehension itself.
+        target_scope = scope
+        while target_scope.kind == "comprehension" and target_scope.parent is not None:
+            target_scope = target_scope.parent
+        self._bind_target(node.target, target_scope)  # type: ignore[attr-defined]
+
+    # --- functions / classes (new scopes) ------------------------------------
+
+    def _walk_function(self, node: ast.AST, scope: _Scope) -> None:
+        args = node.args  # type: ignore[attr-defined]
+        for decorator in node.decorator_list:  # type: ignore[attr-defined]
+            self._walk(decorator, scope)
+        for default in list(args.defaults) + [d for d in args.kw_defaults if d is not None]:
+            self._walk(default, scope)
+        all_args = list(args.posonlyargs) + list(args.args) + list(args.kwonlyargs)
+        if args.vararg:
+            all_args.append(args.vararg)
+        if args.kwarg:
+            all_args.append(args.kwarg)
+        for arg in all_args:
+            self._annotation(arg.annotation, scope)
+        self._annotation(getattr(node, "returns", None), scope)
+        # PEP 695 type parameters (`def f[T: Bound]`) — their bounds/defaults
+        # reference names in the enclosing scope.
+        for type_param in getattr(node, "type_params", []):
+            self._walk(type_param, scope)
+        self._bind(scope, node.name)  # type: ignore[attr-defined]
+
+        fscope = self._new_scope("function", scope)
+        for arg in all_args:
+            self._bind(fscope, arg.arg)
+        for child in node.body:  # type: ignore[attr-defined]
+            self._walk(child, fscope)
+
+    _walk_FunctionDef = _walk_function
+    _walk_AsyncFunctionDef = _walk_function
+
+    def _walk_Lambda(self, node: ast.Lambda, scope: _Scope) -> None:
+        args = node.args
+        for default in list(args.defaults) + [d for d in args.kw_defaults if d is not None]:
+            self._walk(default, scope)
+        lscope = self._new_scope("function", scope)
+        all_args = list(args.posonlyargs) + list(args.args) + list(args.kwonlyargs)
+        if args.vararg:
+            all_args.append(args.vararg)
+        if args.kwarg:
+            all_args.append(args.kwarg)
+        for arg in all_args:
+            self._bind(lscope, arg.arg)
+        self._walk(node.body, lscope)
+
+    def _walk_ClassDef(self, node: ast.ClassDef, scope: _Scope) -> None:
+        for decorator in node.decorator_list:
+            self._walk(decorator, scope)
+        for base in node.bases:
+            self._walk(base, scope)
+        for keyword in node.keywords:
+            self._walk(keyword.value, scope)
+        for type_param in getattr(node, "type_params", []):
+            self._walk(type_param, scope)
+        self._bind(scope, node.name)
+
+        cscope = self._new_scope("class", scope)
+        for child in node.body:
+            self._walk(child, cscope)
+
+
+def _forward_ref_names(text: str) -> Set[str]:
+    """Names referenced by a string forward-reference annotation (best effort)."""
+    names: Set[str] = set()
+    try:
+        expr = ast.parse(text.strip(), mode="eval")
+    except (SyntaxError, ValueError):
+        return names
+    for sub in ast.walk(expr):
+        if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load):
+            names.add(sub.id)
+        elif isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name):
+            names.add(sub.value.id)
+    return names
+
+
+def scoped_import_usage(tree: ast.AST) -> Tuple[Set[Tuple[int, str]], Set[str]]:
+    """Return ``(used_keys, protected)`` for scope-aware import-usage refinement.
+
+    ``used_keys`` holds ``(lineno, bound_name)`` for every import binding that at
+    least one load resolves to under Python's scoping rules. ``protected`` holds
+    names that must always count as used (``__all__`` exports, string forward
+    references, ``global``/``nonlocal`` names). The caller keeps its flat "used"
+    set as the safety floor and only downgrades an import to unused when it is
+    absent from both — so an incomplete model can never fabricate a use it should
+    have kept... it can only fail to *downgrade*, never wrongly downgrade.
+    """
+    builder = _ScopeModelBuilder()
+    builder.build(tree)
+    used_keys: Set[Tuple[int, str]] = set()
+    for scope in builder.scopes:
+        for name in scope.loads:
+            resolved = _resolve_scope(scope, name)
+            if resolved is not None and name in resolved.import_lines:
+                for lineno in resolved.import_lines[name]:
+                    used_keys.add((lineno, name))
+    return used_keys, builder.protected
 
 
 class ImportChecker:
@@ -521,6 +898,47 @@ class ImportChecker:
         check_name = import_info.alias if import_info.alias else import_info.module
         module_base = check_name.split(".")[0]
         return module_base in references or check_name in references
+
+    @staticmethod
+    def _bound_name(import_info: ImportInfo) -> str:
+        """The local name an import binds (what a reference must use to reach it)."""
+        if import_info.is_from_import:
+            return import_info.alias or (import_info.names[0] if import_info.names else "")
+        return import_info.alias or import_info.module.split(".")[0]
+
+    def _refine_with_scopes(
+        self,
+        tree: ast.AST,
+        used_imports: List[ImportInfo],
+        unused_imports: List[ImportInfo],
+    ) -> Tuple[List[ImportInfo], List[ImportInfo]]:
+        """Downgrade flat-"used" imports that scope analysis proves are unused.
+
+        The flat pass (:meth:`analyze_imports`) treats a name loaded *anywhere* as
+        a use, so it can miss an import shadowed by a parameter or one used only in
+        an unrelated scope. This applies Python's scoping rules to move such
+        provably-unused imports to the unused list. It is strictly one-directional
+        (only used -> unused) and never touches a name that is protected
+        (``__all__`` / forward reference / ``global`` / ``nonlocal``) or a star
+        import, so it cannot turn a genuine use into a removal. Any failure in the
+        analysis leaves the safe flat result untouched.
+        """
+        try:
+            used_keys, protected = scoped_import_usage(tree)
+        except Exception:  # pragma: no cover - defensive: never worse than flat
+            return used_imports, unused_imports
+
+        still_used: List[ImportInfo] = []
+        newly_unused: List[ImportInfo] = []
+        for import_info in used_imports:
+            bound = self._bound_name(import_info)
+            resolves = (import_info.line_number, bound) in used_keys
+            if bound == "*" or not bound or bound in protected or resolves:
+                still_used.append(import_info)
+            else:
+                import_info.used = False
+                newly_unused.append(import_info)
+        return still_used, unused_imports + newly_unused
 
     def remove_unused_imports(self, content: str, unused_imports: List[ImportInfo]) -> str:
         """
@@ -950,6 +1368,7 @@ class ImportChecker:
             self.log_verbose(f"Found {len(imports)} imports and {len(references)} name references")
 
             used_imports, unused_imports = self.analyze_imports(imports, references)
+            used_imports, unused_imports = self._refine_with_scopes(tree, used_imports, unused_imports)
 
             self.processed_files += 1
             self.total_issues += len(unused_imports)

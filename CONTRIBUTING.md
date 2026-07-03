@@ -16,7 +16,7 @@ Before creating an issue, please:
 2. **Use the latest version** to ensure the issue hasn't been fixed
 3. **Provide clear reproduction steps** with example files when possible
 
-[Open an issue](https://gitlab.northwardlabs.ca/dependably/python-check/-/issues) on GitLab — describe bugs with reproduction steps and example files, and feature requests with the use case.
+[Open an issue](https://gitlab.northwardlabs.ca/dependably/pycheck/-/issues) on GitLab — describe bugs with reproduction steps and example files, and feature requests with the use case.
 
 ### Development Setup
 
@@ -30,8 +30,8 @@ Before creating an issue, please:
 
 1. **Fork and clone the repository:**
    ```bash
-   git clone https://gitlab.northwardlabs.ca/dependably/python-check.git
-   cd python-check
+   git clone https://gitlab.northwardlabs.ca/dependably/pycheck.git
+   cd pycheck
    ```
 
 2. **Create a virtual environment (recommended):**
