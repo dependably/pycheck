@@ -75,6 +75,26 @@ def _requirement_spec(line: str) -> str:
     return " ".join(kept)
 
 
+def extract_includes(content: str) -> list[str]:
+    """Return the ``-r``/``-c`` include targets referenced in ``content``.
+
+    Used by the runner to follow ``-r base.txt`` / ``-c constraints.txt`` to
+    files that name-glob discovery would miss, so their dependency surface
+    (credentials, trusted-host, untrusted indexes) is not left unvalidated.
+    """
+    includes: list[str] = []
+    for _lineno, raw in _logical_lines(content):
+        line = raw.strip()
+        if not line.startswith("-"):
+            continue
+        m = _OPTION_RE.match(line)
+        if m and m.group(1) in _INCLUDE_OPTS:
+            value = (m.group(2) or "").strip()
+            if value:
+                includes.append(value)
+    return includes
+
+
 def validate_requirements(content: str, *, allowed_hosts: Optional[Sequence[str]] = None) -> ValidationResult:
     """Validate requirements.txt content.
 
