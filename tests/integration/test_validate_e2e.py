@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -285,3 +286,37 @@ class TestExtractIncludes:
 
         content = "-r base.txt\n--constraint c.txt\nrequests==2.0\n-e git+https://x/y#egg=z\n"
         assert extract_includes(content) == ["base.txt", "c.txt"]
+
+
+class TestConfigWiringAndJson:
+    """#24 coverage gaps: .dependably-check wiring, malformed config, cleanup json."""
+
+    def test_dependably_check_allowlists_private_index(self, tmp_path, capsys):
+        (tmp_path / "requirements.txt").write_text("--index-url https://nexus.corp.local/simple\n")
+        from validators.runner import run_validators
+
+        # Without the config, the private index is untrusted -> exit 1.
+        assert run_validators(tmp_path) == 1
+        capsys.readouterr()
+        # With it allowlisted, the same run is clean.
+        (tmp_path / ".dependably-check").write_text('{"python": {"allowedRegistryHosts": ["nexus.corp.local"]}}')
+        assert run_validators(tmp_path) == 0
+
+    def test_malformed_dependably_check_exits_two(self, tmp_path, capsys):
+        (tmp_path / "requirements.txt").write_text("requests==2.0\n")
+        (tmp_path / ".dependably-check").write_text("{ this is not json")
+        with patch.object(sys, "argv", ["checker.py", "--validate", str(tmp_path)]):
+            assert main() == 2
+
+    def test_cleanup_json_output_is_clean_and_file_modified(self, tmp_path, capsys):
+        f = tmp_path / "x.py"
+        f.write_text("import os\nimport sys\nprint(sys.argv)\n")  # os unused
+        with patch.object(sys, "argv", ["checker.py", "--cleanup", "--format", "json", str(f)]):
+            code = main()
+        out = capsys.readouterr().out
+        # stdout must be a single valid JSON document (no human text mixed in).
+        doc = json.loads(out)
+        assert doc["summary"]["exitCode"] == code == 0
+        # The file was actually cleaned and a backup written.
+        assert "import os" not in f.read_text()
+        assert f.with_suffix(".py.backup").exists()
