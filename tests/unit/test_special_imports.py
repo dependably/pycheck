@@ -49,3 +49,41 @@ class TestAllReExports:
     def test_all_tuple_form(self):
         used, unused = _analyze("from mod import foo\n\n__all__ = ('foo',)\n")
         assert unused == []
+
+
+def _unused_names(source):
+    """Full pipeline (flat analyze + scope refinement) -> sorted unused bound names."""
+    checker = ImportChecker(check_mode=True)
+    tree = ast.parse(source)
+    imports = checker.extract_imports_from_ast(tree)
+    references = checker.extract_name_references(tree)
+    used, unused = checker.analyze_imports(imports, references)
+    used, unused = checker._refine_with_scopes(tree, used, unused)
+    return sorted(checker._bound_name(i) for i in unused)
+
+
+class TestRedundantAliasReExports:
+    """PEP 484 redundant alias (`from m import X as X`) = intentional re-export."""
+
+    def test_from_import_redundant_alias_kept(self):
+        assert _unused_names("from .ls import Server as Server\n") == []
+
+    def test_plain_import_redundant_alias_kept(self):
+        assert _unused_names("import os as os\n") == []
+
+    def test_multiple_redundant_aliases_kept(self):
+        assert _unused_names("from mod import a as a, b as b\n") == []
+
+    def test_redundant_alias_survives_scope_refinement(self):
+        # A re-export in an __init__-style module is referenced nowhere locally;
+        # the scope pass must not downgrade it.
+        assert _unused_names("from .core import Thing as Thing\ndef f(x):\n    return x\n") == []
+
+    def test_non_redundant_alias_still_flagged_when_unused(self):
+        # `X as Y` (Y != X) is a normal alias, not a re-export marker.
+        assert _unused_names("from mod import Thing as T\n") == ["T"]
+        assert _unused_names("import os as o\n") == ["o"]
+
+    def test_plain_reexport_without_marker_still_flagged(self):
+        # No __all__, no redundant alias -> flagged (documented, matches pyflakes).
+        assert _unused_names("from .ls import Server\n") == ["Server"]
