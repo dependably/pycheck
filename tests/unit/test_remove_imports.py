@@ -548,6 +548,12 @@ class TestCleanupCorruptionRegression:
         code = "from typing import cast\n" "from decimal import Decimal\n" 'd = cast("Decimal", 1)\n' "print(d)\n"
         assert "from decimal import Decimal" in self._clean(code)
 
+    def test_forward_ref_in_aliased_cast_preserved(self):
+        # `from typing import cast as c` — the forward-ref string still protects
+        # its backing import even though the call func is Name `c`, not `cast`.
+        code = "from typing import cast as c\n" "from decimal import Decimal\n" 'd = c("Decimal", 1)\n' "print(d)\n"
+        assert "from decimal import Decimal" in self._clean(code)
+
     def test_genuinely_unused_type_checking_import_left_in_place(self):
         # No forward reference uses it, but removing the sole block statement
         # would leave `if TYPE_CHECKING:` empty and unparseable.

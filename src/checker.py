@@ -218,14 +218,34 @@ class ImportInfo:
         return f"ImportInfo(module='{self.module}', names={self.names}, alias='{self.alias}', line={self.line_number})"
 
 
-def _cast_type_arg(node: ast.Call) -> Optional[ast.expr]:
+def _collect_cast_aliases(tree: ast.AST) -> Set[str]:
+    """Local names that refer to ``typing.cast`` (including aliased imports).
+
+    Always seeds with ``{"cast"}`` so the conservative default (a bare ``cast``
+    Name, e.g. a shadow or re-export) keeps being treated as a cast call. Then,
+    for every ``from typing``/``from typing_extensions import cast [as x]``, adds
+    the bound local name so ``from typing import cast as c; c("Decimal", x)`` is
+    recognised too. Assignment-aliases (``c = cast``) are out of static reach and
+    intentionally not tracked.
+    """
+    names: Set[str] = {"cast"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in {"typing", "typing_extensions"}:
+            for alias in node.names:
+                if alias.name == "cast":
+                    names.add(alias.asname or alias.name)
+    return names
+
+
+def _cast_type_arg(node: ast.Call, cast_names: Set[str]) -> Optional[ast.expr]:
     """The type argument of a ``cast(...)`` call (positional or ``typ=``), else None.
 
-    Matches both ``cast(...)`` and ``x.cast(...)``; the type may be a string
-    forward reference whose imports must not be removed as unused.
+    Matches ``cast(...)`` (any local name in ``cast_names``, which covers aliased
+    ``from typing import cast as c``) and ``x.cast(...)``; the type may be a
+    string forward reference whose imports must not be removed as unused.
     """
     func = node.func
-    is_cast = (isinstance(func, ast.Name) and func.id == "cast") or (
+    is_cast = (isinstance(func, ast.Name) and func.id in cast_names) or (
         isinstance(func, ast.Attribute) and func.attr == "cast"
     )
     if not is_cast:
@@ -242,8 +262,9 @@ class _NameReferenceVisitor(ast.NodeVisitor):
     name counts as "used" even when it is not otherwise referenced.
     """
 
-    def __init__(self, references: Set[str]) -> None:
+    def __init__(self, references: Set[str], cast_names: Set[str]) -> None:
         self._references = references
+        self._cast_names = cast_names
 
     def visit_Name(self, node: ast.Name) -> None:
         # Only count names that are being loaded (not stored).
@@ -283,7 +304,7 @@ class _NameReferenceVisitor(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         # `cast("Decimal", x)` / `typing.cast(...)` — the type arg is a forward
         # reference, whether passed positionally or as ``typ=``.
-        type_arg = _cast_type_arg(node)
+        type_arg = _cast_type_arg(node, self._cast_names)
         if type_arg is not None:
             self._collect_string_annotations(type_arg)
         self.generic_visit(node)
@@ -419,8 +440,14 @@ class _ScopeModelBuilder:
         # Names that must always count as used: __all__ exports, string
         # forward references, and any global/nonlocal-declared name.
         self.protected: Set[str] = set()
+        # Local names that mean ``typing.cast`` (see _collect_cast_aliases).
+        self.cast_names: Set[str] = {"cast"}
 
     def build(self, tree: ast.AST) -> None:
+        # Compute cast aliases up front: an aliased ``cast`` import can appear
+        # after its call site in AST order, so this must precede the walk rather
+        # than accumulate during it.
+        self.cast_names = _collect_cast_aliases(tree)
         for stmt in getattr(tree, "body", []):
             self._walk(stmt, self.module)
 
@@ -477,7 +504,7 @@ class _ScopeModelBuilder:
         # `cast("Decimal", x)` / `typing.cast(...)` — the type argument is a
         # string forward reference; protect the names it uses (mirrors the flat
         # pass, so the scoped refinement cannot un-protect what it kept).
-        type_arg = _cast_type_arg(node)
+        type_arg = _cast_type_arg(node, self.cast_names)
         if isinstance(type_arg, ast.Constant) and isinstance(type_arg.value, str):
             self.protected.update(_forward_ref_names(type_arg.value))
         for child in ast.iter_child_nodes(node):
@@ -857,7 +884,8 @@ class ImportChecker:
             Set of referenced names
         """
         references: Set[str] = set()
-        _NameReferenceVisitor(references).visit(tree)
+        cast_names = _collect_cast_aliases(tree)
+        _NameReferenceVisitor(references, cast_names).visit(tree)
         return references
 
     def analyze_imports(
