@@ -131,3 +131,17 @@ def test_no_false_positive_pep695(code):
 @pytest.mark.parametrize("code", list(_NO_FALSE_POSITIVE.values()), ids=list(_NO_FALSE_POSITIVE))
 def test_no_false_positive(code):
     assert _unused_names(code) == []
+
+
+def test_scope_dispatch_dict_is_wired():
+    # The dispatch dict is built in __init__ by referencing each handler by
+    # name, so a rename typo would raise AttributeError here (and silently
+    # disable scope refinement in production). Guard against that.
+    from checker import _ScopeModelBuilder
+
+    builder = _ScopeModelBuilder()
+    assert builder._dispatch, "dispatch dict is empty"
+    assert all(callable(handler) for handler in builder._dispatch.values())
+    # A representative set of node types must be handled directly.
+    for node_type in (ast.Name, ast.ClassDef, ast.FunctionDef, ast.For, ast.NamedExpr):
+        assert node_type in builder._dispatch

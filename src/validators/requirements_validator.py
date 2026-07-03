@@ -9,7 +9,7 @@ pip.conf validator -- treats credentials embedded in an index URL and
 from __future__ import annotations
 
 import re
-from typing import Iterator, Optional, Sequence, Tuple
+from typing import Any, Iterator, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
 from ._pep508 import is_valid_pep508
@@ -181,6 +181,25 @@ def _check_url_requirement(line: str, lineno: int, r: ValidationResult) -> None:
     _check_index_url(url, "url requirement", lineno, r, scheme_check=False)
 
 
+def _check_url_credentials(parts: Any, url: str, opt: str, lineno: int, r: ValidationResult) -> None:
+    """Flag a plaintext credential embedded in a URL's userinfo component."""
+    if not (parts.username or parts.password):
+        return
+    scheme = parts.scheme.lower()
+    ssh_like = scheme == "ssh" or scheme.endswith("+ssh")
+    if ssh_like and parts.username and parts.password is None:
+        # `git@host` in an SSH VCS URL is the standard, secret-free convention --
+        # a username with no password, not a credential.
+        return
+    userinfo_ok = _is_env_ref(parts.username) and (parts.password is None or _is_env_ref(parts.password))
+    if not userinfo_ok:
+        r.add_error(
+            f"plaintext credential in {opt} ({_redact(url)}) -- use an env var reference",
+            "REQ_PLAINTEXT_SECRET",
+            line=lineno,
+        )
+
+
 def _check_index_url(
     url: str,
     opt: str,
@@ -194,21 +213,7 @@ def _check_index_url(
         parts = urlsplit(url)
     except ValueError:
         return
-    if parts.username or parts.password:
-        scheme = parts.scheme.lower()
-        ssh_like = scheme == "ssh" or scheme.endswith("+ssh")
-        if ssh_like and parts.username and parts.password is None:
-            # `git@host` in an SSH VCS URL is the standard, secret-free
-            # convention -- a username with no password, not a credential.
-            userinfo_ok = True
-        else:
-            userinfo_ok = _is_env_ref(parts.username) and (parts.password is None or _is_env_ref(parts.password))
-        if not userinfo_ok:
-            r.add_error(
-                f"plaintext credential in {opt} ({_redact(url)}) -- use an env var reference",
-                "REQ_PLAINTEXT_SECRET",
-                line=lineno,
-            )
+    _check_url_credentials(parts, url, opt, lineno, r)
     if scheme_check and parts.scheme.lower() == "http":
         r.add_warning(f"{opt} over http:// ({url}) -- prefer https://", "REQ_INSECURE_INDEX", line=lineno)
 

@@ -170,15 +170,19 @@ def _validate_build_system(build_system: Any, r: ValidationResult) -> None:
         return
     requires = build_system.get("requires")
     if requires is not None:
-        if not isinstance(requires, list) or not all(isinstance(x, str) for x in requires):
-            r.add_error("[build-system].requires must be a list of strings", "PP_BUILD_SYSTEM_TYPE")
-        else:
-            for entry in requires:
-                if not is_valid_pep508(entry):
-                    r.add_error(
-                        f"invalid PEP 508 specifier in [build-system].requires: {entry!r}",
-                        "PP_INVALID_DEP",
-                    )
+        _validate_build_requires(requires, r)
     backend = build_system.get("build-backend")
     if backend is not None and not isinstance(backend, str):
         r.add_error("[build-system].build-backend must be a string", "PP_BUILD_SYSTEM_TYPE")
+
+
+def _validate_build_requires(requires: Any, r: ValidationResult) -> None:
+    if not isinstance(requires, list) or not all(isinstance(x, str) for x in requires):
+        r.add_error("[build-system].requires must be a list of strings", "PP_BUILD_SYSTEM_TYPE")
+        return
+    for entry in requires:
+        if not is_valid_pep508(entry):
+            r.add_error(
+                f"invalid PEP 508 specifier in [build-system].requires: {entry!r}",
+                "PP_INVALID_DEP",
+            )

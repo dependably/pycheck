@@ -14,7 +14,7 @@ import shutil
 import sys
 import tokenize
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 __version__ = "1.2.0"
 
@@ -466,6 +466,34 @@ class _ScopeModelBuilder:
         self.protected: Set[str] = set()
         # Local names that mean ``typing.cast`` (see _collect_cast_aliases).
         self.cast_names: Set[str] = {"cast"}
+        # AST node type -> handler. Anything unmapped falls through to a generic
+        # child walk (see _walk); async variants share their sync handler.
+        self._dispatch: Dict[type, Callable[..., None]] = {
+            ast.Name: self._walk_name,
+            ast.Attribute: self._walk_attribute,
+            ast.Call: self._walk_call,
+            ast.Import: self._walk_import,
+            ast.ImportFrom: self._walk_import_from,
+            ast.Assign: self._walk_assign,
+            ast.AugAssign: self._walk_aug_assign,
+            ast.AnnAssign: self._walk_ann_assign,
+            ast.ListComp: self._walk_list_comp,
+            ast.SetComp: self._walk_set_comp,
+            ast.GeneratorExp: self._walk_generator_exp,
+            ast.DictComp: self._walk_dict_comp,
+            ast.For: self._walk_for,
+            ast.AsyncFor: self._walk_for,
+            ast.With: self._walk_with,
+            ast.AsyncWith: self._walk_with,
+            ast.ExceptHandler: self._walk_except_handler,
+            ast.Global: self._walk_global,
+            ast.Nonlocal: self._walk_nonlocal,
+            ast.NamedExpr: self._walk_named_expr,
+            ast.FunctionDef: self._walk_function,
+            ast.AsyncFunctionDef: self._walk_function,
+            ast.Lambda: self._walk_lambda,
+            ast.ClassDef: self._walk_class_def,
+        }
 
     def build(self, tree: ast.AST) -> None:
         # Compute cast aliases up front: an aliased ``cast`` import can appear
@@ -506,7 +534,7 @@ class _ScopeModelBuilder:
                 self.protected.update(_forward_ref_names(sub.value))
 
     def _walk(self, node: ast.AST, scope: _Scope) -> None:
-        handler = getattr(self, f"_walk_{type(node).__name__}", None)
+        handler = self._dispatch.get(type(node))
         if handler is not None:
             handler(node, scope)
         else:
@@ -515,16 +543,16 @@ class _ScopeModelBuilder:
 
     # --- leaf references -----------------------------------------------------
 
-    def _walk_Name(self, node: ast.Name, scope: _Scope) -> None:
+    def _walk_name(self, node: ast.Name, scope: _Scope) -> None:
         if isinstance(node.ctx, ast.Load):
             scope.loads.append(node.id)
         elif isinstance(node.ctx, (ast.Store, ast.Del)):
             self._bind(scope, node.id)
 
-    def _walk_Attribute(self, node: ast.Attribute, scope: _Scope) -> None:
+    def _walk_attribute(self, node: ast.Attribute, scope: _Scope) -> None:
         self._walk(node.value, scope)
 
-    def _walk_Call(self, node: ast.Call, scope: _Scope) -> None:
+    def _walk_call(self, node: ast.Call, scope: _Scope) -> None:
         # `cast("Decimal", x)` / `typing.cast(...)` — the type argument is a
         # string forward reference; protect the names it uses (mirrors the flat
         # pass, so the scoped refinement cannot un-protect what it kept).
@@ -536,13 +564,13 @@ class _ScopeModelBuilder:
 
     # --- imports -------------------------------------------------------------
 
-    def _walk_Import(self, node: ast.Import, scope: _Scope) -> None:
+    def _walk_import(self, node: ast.Import, scope: _Scope) -> None:
         for alias in node.names:
             name = alias.asname or alias.name.split(".")[0]
             self._bind(scope, name)
             scope.import_lines.setdefault(name, set()).add(node.lineno)
 
-    def _walk_ImportFrom(self, node: ast.ImportFrom, scope: _Scope) -> None:
+    def _walk_import_from(self, node: ast.ImportFrom, scope: _Scope) -> None:
         if node.module == "__future__":
             return
         for alias in node.names:
@@ -554,13 +582,13 @@ class _ScopeModelBuilder:
 
     # --- assignments / augmented / annotated ---------------------------------
 
-    def _walk_Assign(self, node: ast.Assign, scope: _Scope) -> None:
+    def _walk_assign(self, node: ast.Assign, scope: _Scope) -> None:
         self._walk(node.value, scope)
         for target in node.targets:
             self._bind_target(target, scope)
         self._maybe_all_exports(node.targets, node.value)
 
-    def _walk_AugAssign(self, node: ast.AugAssign, scope: _Scope) -> None:
+    def _walk_aug_assign(self, node: ast.AugAssign, scope: _Scope) -> None:
         if isinstance(node.target, ast.Name):
             scope.loads.append(node.target.id)  # augmented assignment reads first
             self._bind(scope, node.target.id)
@@ -569,7 +597,7 @@ class _ScopeModelBuilder:
         self._walk(node.value, scope)
         self._maybe_all_exports([node.target], node.value)
 
-    def _walk_AnnAssign(self, node: ast.AnnAssign, scope: _Scope) -> None:
+    def _walk_ann_assign(self, node: ast.AnnAssign, scope: _Scope) -> None:
         self._annotation(node.annotation, scope)
         if node.value is not None:
             self._walk(node.value, scope)
@@ -598,27 +626,25 @@ class _ScopeModelBuilder:
         for element in elements:
             self._walk(element, comp)
 
-    def _walk_ListComp(self, node: ast.ListComp, scope: _Scope) -> None:
+    def _walk_list_comp(self, node: ast.ListComp, scope: _Scope) -> None:
         self._walk_comprehension_expr(node, scope, [node.elt])
 
-    def _walk_SetComp(self, node: ast.SetComp, scope: _Scope) -> None:
+    def _walk_set_comp(self, node: ast.SetComp, scope: _Scope) -> None:
         self._walk_comprehension_expr(node, scope, [node.elt])
 
-    def _walk_GeneratorExp(self, node: ast.GeneratorExp, scope: _Scope) -> None:
+    def _walk_generator_exp(self, node: ast.GeneratorExp, scope: _Scope) -> None:
         self._walk_comprehension_expr(node, scope, [node.elt])
 
-    def _walk_DictComp(self, node: ast.DictComp, scope: _Scope) -> None:
+    def _walk_dict_comp(self, node: ast.DictComp, scope: _Scope) -> None:
         self._walk_comprehension_expr(node, scope, [node.key, node.value])
 
-    def _walk_For(self, node: ast.AST, scope: _Scope) -> None:
+    def _walk_for(self, node: ast.AST, scope: _Scope) -> None:
         self._walk(node.iter, scope)  # type: ignore[attr-defined]
         self._bind_target(node.target, scope)  # type: ignore[attr-defined]
         for child in node.body + node.orelse:  # type: ignore[attr-defined]
             self._walk(child, scope)
 
-    _walk_AsyncFor = _walk_For
-
-    def _walk_With(self, node: ast.AST, scope: _Scope) -> None:
+    def _walk_with(self, node: ast.AST, scope: _Scope) -> None:
         for item in node.items:  # type: ignore[attr-defined]
             self._walk(item.context_expr, scope)
             if item.optional_vars is not None:
@@ -626,9 +652,7 @@ class _ScopeModelBuilder:
         for child in node.body:  # type: ignore[attr-defined]
             self._walk(child, scope)
 
-    _walk_AsyncWith = _walk_With
-
-    def _walk_ExceptHandler(self, node: ast.ExceptHandler, scope: _Scope) -> None:
+    def _walk_except_handler(self, node: ast.ExceptHandler, scope: _Scope) -> None:
         if node.type is not None:
             self._walk(node.type, scope)
         if node.name:
@@ -636,15 +660,15 @@ class _ScopeModelBuilder:
         for child in node.body:
             self._walk(child, scope)
 
-    def _walk_Global(self, node: ast.Global, scope: _Scope) -> None:
+    def _walk_global(self, node: ast.Global, scope: _Scope) -> None:
         scope.globals.update(node.names)
         self.protected.update(node.names)
 
-    def _walk_Nonlocal(self, node: ast.Nonlocal, scope: _Scope) -> None:
+    def _walk_nonlocal(self, node: ast.Nonlocal, scope: _Scope) -> None:
         scope.nonlocals.update(node.names)
         self.protected.update(node.names)
 
-    def _walk_NamedExpr(self, node: ast.AST, scope: _Scope) -> None:
+    def _walk_named_expr(self, node: ast.AST, scope: _Scope) -> None:
         self._walk(node.value, scope)  # type: ignore[attr-defined]
         # PEP 572: a walrus inside a comprehension binds in the nearest enclosing
         # non-comprehension scope, not the comprehension itself.
@@ -681,10 +705,7 @@ class _ScopeModelBuilder:
         for child in node.body:  # type: ignore[attr-defined]
             self._walk(child, fscope)
 
-    _walk_FunctionDef = _walk_function
-    _walk_AsyncFunctionDef = _walk_function
-
-    def _walk_Lambda(self, node: ast.Lambda, scope: _Scope) -> None:
+    def _walk_lambda(self, node: ast.Lambda, scope: _Scope) -> None:
         args = node.args
         for default in list(args.defaults) + [d for d in args.kw_defaults if d is not None]:
             self._walk(default, scope)
@@ -698,7 +719,7 @@ class _ScopeModelBuilder:
             self._bind(lscope, arg.arg)
         self._walk(node.body, lscope)
 
-    def _walk_ClassDef(self, node: ast.ClassDef, scope: _Scope) -> None:
+    def _walk_class_def(self, node: ast.ClassDef, scope: _Scope) -> None:
         for decorator in node.decorator_list:
             self._walk(decorator, scope)
         for base in node.bases:
@@ -1361,8 +1382,9 @@ class ImportChecker:
                 if tok.type == tokenize.STRING and tok.end[0] > tok.start[0]:
                     for lineno in range(tok.start[0], tok.end[0] + 1):
                         string_lines.add(lineno - 1)  # 0-based
-        except (tokenize.TokenError, IndentationError, SyntaxError):
+        except (tokenize.TokenError, SyntaxError):
             # Tokenizing failed (already-odd source); collapse nothing to be safe.
+            # (IndentationError is a SyntaxError subclass, so it is covered too.)
             pass
         return string_lines
 
