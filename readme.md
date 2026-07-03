@@ -114,7 +114,7 @@ schema, so every tool in the suite parses the same way:
 ```json
 {
   "tool": "Dependably.pycheck",
-  "toolVersion": "1.2.0",
+  "toolVersion": "1.2.1",
   "schemaVersion": "1.0",
   "target": "src",
   "summary": {

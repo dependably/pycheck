@@ -22,7 +22,7 @@ pip install -r requirements-dev.txt
 
 ### 2. Build and Install a Distribution Package
 
-The distribution is `Dependably.pycheck` (current version `1.2.0`). Build the
+The distribution is `Dependably.pycheck` (current version `1.2.1`). Build the
 wheel and source distribution locally, then install the built artifact:
 
 ```bash
@@ -33,15 +33,15 @@ pip install build
 python -m build
 
 # Install the freshly built wheel
-pip install dist/dependably_pycheck-1.2.0-py3-none-any.whl
+pip install dist/dependably_pycheck-1.2.1-py3-none-any.whl
 
 # Or install the source distribution
-pip install dist/dependably_pycheck-1.2.0.tar.gz
+pip install dist/dependably_pycheck-1.2.1.tar.gz
 ```
 
 `python -m build` normalizes the project name (`Dependably.pycheck`) to
 `dependably_pycheck` in the artifact filenames, so the produced files are
-`dependably_pycheck-1.2.0-py3-none-any.whl` and `dependably_pycheck-1.2.0.tar.gz`.
+`dependably_pycheck-1.2.1-py3-none-any.whl` and `dependably_pycheck-1.2.1.tar.gz`.
 The editable install in method 1 (`pip install -e .`) avoids the filename
 entirely and is the simplest path for development.
 
