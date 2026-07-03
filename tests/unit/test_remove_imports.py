@@ -615,3 +615,24 @@ class TestCleanupCorruptionRegression:
         result = self._clean(code)
         assert "import os as a" in result
         assert " as b" not in result
+
+    # --- #6: inline comments on kept names in multi-line imports ------------
+
+    def test_multiline_kept_comment_preserved(self):
+        code = "from x import (\n" "    path,  # keep me\n" "    unused,\n" "    other,\n" ")\n" "print(path, other)\n"
+        result = self._clean(code)
+        assert "# keep me" in result
+        assert "path" in result and "other" in result
+        assert "unused" not in result
+
+    def test_multiline_without_comments_still_collapses(self):
+        code = "from collections import (\n    Counter,\n    deque,\n)\nprint(Counter)\n"
+        result = self._clean(code)
+        assert result == "from collections import Counter\nprint(Counter)\n"
+
+    def test_multiline_kept_comment_with_alias(self):
+        code = "from mod import (\n" "    a as alpha,  # alias comment\n" "    b,\n" ")\n" "print(alpha)\n"
+        result = self._clean(code)
+        assert "# alias comment" in result
+        assert "a as alpha" in result
+        assert "import b" not in result and "    b" not in result
