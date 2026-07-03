@@ -84,9 +84,11 @@ def _validate_project_table(project: Dict[str, Any], r: ValidationResult) -> Non
 
 def _validate_name_version(project: Dict[str, Any], dynamic: list, r: ValidationResult) -> None:
     name = project.get("name")
+    # PEP 621: name is mandatory and MUST NOT be declared dynamic.
+    if "name" in dynamic:
+        r.add_error("[project].name must not be declared dynamic (PEP 621)", "PP_DYNAMIC_NAME")
     if name is None:
-        if "name" not in dynamic:
-            r.add_error("missing [project].name", "PP_MISSING_NAME")
+        r.add_error("missing [project].name", "PP_MISSING_NAME")
     elif not is_valid_name(name):
         r.add_error(f"invalid [project].name: {name!r}", "PP_INVALID_NAME")
 
@@ -170,6 +172,13 @@ def _validate_build_system(build_system: Any, r: ValidationResult) -> None:
     if requires is not None:
         if not isinstance(requires, list) or not all(isinstance(x, str) for x in requires):
             r.add_error("[build-system].requires must be a list of strings", "PP_BUILD_SYSTEM_TYPE")
+        else:
+            for entry in requires:
+                if not is_valid_pep508(entry):
+                    r.add_error(
+                        f"invalid PEP 508 specifier in [build-system].requires: {entry!r}",
+                        "PP_INVALID_DEP",
+                    )
     backend = build_system.get("build-backend")
     if backend is not None and not isinstance(backend, str):
         r.add_error("[build-system].build-backend must be a string", "PP_BUILD_SYSTEM_TYPE")

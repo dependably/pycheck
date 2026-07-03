@@ -170,3 +170,19 @@ class TestValidateJsonOutput:
         doc = json.loads(capsys.readouterr().out)
         assert doc["tool"] == "Dependably.pycheck"
         assert len(doc["findings"]) >= 1
+
+
+class TestBomHandling:
+    """#23: a UTF-8 BOM must not break artifact validation."""
+
+    def test_bom_requirements_valid(self, tmp_path):
+        (tmp_path / "requirements.txt").write_bytes(b"\xef\xbb\xbfrequests==1.0\n")
+        from validators.runner import run_validators
+
+        assert run_validators(tmp_path) == 0
+
+    def test_bom_pip_conf_valid(self, tmp_path):
+        (tmp_path / "pip.conf").write_bytes(b"\xef\xbb\xbf[global]\nindex-url = https://pypi.org/simple\n")
+        from validators.runner import run_validators
+
+        assert run_validators(tmp_path) == 0
