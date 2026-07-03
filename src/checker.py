@@ -911,6 +911,21 @@ class ImportChecker:
         return used_imports, unused_imports
 
     @staticmethod
+    def _is_reexport_alias(import_info: ImportInfo) -> bool:
+        """True for a PEP 484 redundant alias marking an intentional re-export.
+
+        ``from mod import Name as Name`` / ``import mod as mod`` — repeating the
+        name in the ``as`` clause is the standard way (honoured by ruff, mypy and
+        pyright) to declare a public re-export. Such an import is treated as used
+        even when nothing else references it, so cleanup never deletes it.
+        """
+        if not import_info.alias:
+            return False
+        if import_info.is_from_import:
+            return import_info.alias in import_info.names
+        return import_info.alias == import_info.module
+
+    @staticmethod
     def _import_is_used(import_info: ImportInfo, references: Set[str]) -> bool:
         """Return True if an import (or its alias) is referenced in the code."""
         if import_info.is_from_import:
@@ -919,9 +934,15 @@ class ImportChecker:
             # same). Otherwise cleanup would delete a live wildcard import.
             if "*" in import_info.names:
                 return True
+            # A redundant alias (`from m import X as X`) is an explicit re-export.
+            if ImportChecker._is_reexport_alias(import_info):
+                return True
             # 'from module import name' — any imported name (or its alias) used.
             return any((import_info.alias or name) in references for name in import_info.names)
 
+        # A redundant alias (`import os as os`) is an explicit re-export.
+        if ImportChecker._is_reexport_alias(import_info):
+            return True
         # 'import module' — match the alias/module, including dotted access.
         check_name = import_info.alias if import_info.alias else import_info.module
         module_base = check_name.split(".")[0]
@@ -947,9 +968,9 @@ class ImportChecker:
         an unrelated scope. This applies Python's scoping rules to move such
         provably-unused imports to the unused list. It is strictly one-directional
         (only used -> unused) and never touches a name that is protected
-        (``__all__`` / forward reference / ``global`` / ``nonlocal``) or a star
-        import, so it cannot turn a genuine use into a removal. Any failure in the
-        analysis leaves the safe flat result untouched.
+        (``__all__`` / forward reference / ``global`` / ``nonlocal``), a star
+        import, or a redundant-alias re-export, so it cannot turn a genuine use
+        into a removal. Any failure in the analysis leaves the flat result.
         """
         try:
             used_keys, protected = scoped_import_usage(tree)
@@ -961,7 +982,7 @@ class ImportChecker:
         for import_info in used_imports:
             bound = self._bound_name(import_info)
             resolves = (import_info.line_number, bound) in used_keys
-            if bound == "*" or not bound or bound in protected or resolves:
+            if bound == "*" or not bound or bound in protected or resolves or self._is_reexport_alias(import_info):
                 still_used.append(import_info)
             else:
                 import_info.used = False

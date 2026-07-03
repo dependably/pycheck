@@ -60,7 +60,9 @@ python src/checker.py --validate .
 **Import analysis:**
 - Parses files with the `ast` module; never executes target code
 - Tracks loaded names via `_NameReferenceVisitor`; an import is "used" if its
-  name (or alias) is referenced, or re-exported through `__all__`
+  name (or alias) is referenced, re-exported through `__all__`, or marked as an
+  intentional re-export via a PEP 484 redundant alias (`from m import X as X` /
+  `import mod as mod`, honoured by ruff/mypy/pyright)
 - Distinguishes `import module` (matches dotted base) from
   `from module import name` (tracks individual names; partial removal supported)
 - `from __future__ import ...` is skipped (compiler directives, never "unused")
