@@ -236,3 +236,52 @@ class TestRecursionAndExitCodes:
         # documented additive behavior); but an operational skip must not.
         (tmp_path / "requirements.txt").write_text("requests>=2.0\n")  # unpinned warning
         assert self._run(tmp_path, fail_on=[("severity", "low")]) == 1
+
+
+class TestRequirementIncludes:
+    """#10: -r/-c includes are followed and validated."""
+
+    def _run(self, target, **kw):
+        from validators.runner import run_validators
+
+        return run_validators(target, **kw)
+
+    def test_include_target_is_validated(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("-r reqs/prod.in\n")
+        reqs = tmp_path / "reqs"
+        reqs.mkdir()
+        (reqs / "prod.in").write_text("--trusted-host evil.example\nrequests==2.0\n")
+        # The include carries a trusted-host error -> exit 1 (surface validated).
+        assert self._run(tmp_path) == 1
+
+    def test_clean_include_passes(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("-r base.in\n")
+        (tmp_path / "base.in").write_text("requests==2.0\n")
+        assert self._run(tmp_path) == 0
+
+    def test_constraint_include_followed(self, tmp_path):
+        (tmp_path / "requirements.txt").write_text("-c constraints.txt\nrequests==2.0\n")
+        (tmp_path / "constraints.txt").write_text("--trusted-host evil.example\n")
+        assert self._run(tmp_path) == 1
+
+    def test_include_cycle_terminates(self, tmp_path):
+        # a -> b -> a must not loop forever.
+        (tmp_path / "requirements.txt").write_text("-r a.in\n")
+        (tmp_path / "a.in").write_text("-r b.in\nrequests==2.0\n")
+        (tmp_path / "b.in").write_text("-r a.in\nclick==8.0\n")
+        assert self._run(tmp_path) == 0
+
+    def test_missing_include_is_ignored(self, tmp_path):
+        # A non-existent include is not our error to raise here.
+        (tmp_path / "requirements.txt").write_text("-r does-not-exist.in\nrequests==2.0\n")
+        assert self._run(tmp_path) == 0
+
+
+class TestExtractIncludes:
+    """Unit coverage for the include extractor."""
+
+    def test_extracts_r_and_c(self):
+        from validators.requirements_validator import extract_includes
+
+        content = "-r base.txt\n--constraint c.txt\nrequests==2.0\n-e git+https://x/y#egg=z\n"
+        assert extract_includes(content) == ["base.txt", "c.txt"]

@@ -18,7 +18,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from .config import resolve_allowed_hosts
 from .pip_conf_validator import validate_pip_conf
 from .pyproject_validator import validate_pyproject
-from .requirements_validator import validate_requirements
+from .requirements_validator import extract_includes, validate_requirements
 from .result import ValidationResult
 
 # The JSON document is assembled with the shared helpers from ``checker`` so the
@@ -121,7 +121,42 @@ def discover_config_files(target: Path, recursive: bool = True) -> List[Tuple[Pa
             if path not in seen:
                 seen.add(path)
                 found.append((path, validator))
-    return found
+    return _follow_requirement_includes(found)
+
+
+def _follow_requirement_includes(
+    found: List[Tuple[Path, _Validator]],
+) -> List[Tuple[Path, _Validator]]:
+    """Expand discovery to follow ``-r``/``-c`` includes to existing files.
+
+    Name-glob discovery only finds ``requirements*.txt``; a file that pulls in
+    ``-r base.in`` or ``-r deps/prod.txt`` would otherwise leave that dependency
+    surface unvalidated. Includes are resolved relative to the including file and
+    followed transitively, cycle-safe.
+    """
+    result = list(found)
+    seen_resolved = {p.resolve() for p, _ in found}
+    queue = [p for p, validator in found if validator is validate_requirements]
+    while queue:
+        req_path = queue.pop()
+        try:
+            content = req_path.read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeDecodeError):
+            # Unreadable here means no followable includes; the unreadability is
+            # reported later when _collect_results tries to validate it.
+            continue
+        for include in extract_includes(content):
+            include_path = req_path.parent / include
+            try:
+                resolved = include_path.resolve()
+            except OSError:
+                continue
+            if resolved in seen_resolved or not include_path.is_file():
+                continue
+            seen_resolved.add(resolved)
+            result.append((include_path, validate_requirements))
+            queue.append(include_path)
+    return result
 
 
 def run_validators(
