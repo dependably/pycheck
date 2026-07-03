@@ -228,7 +228,9 @@ class TestMainFunction:
             result = main()
 
         assert result == 0
-        mock_checker_class.assert_called_once_with(check_mode=True, verbose=False, quiet=False)
+        mock_checker_class.assert_called_once_with(
+            check_mode=True, verbose=False, quiet=False, remove_possible_reexports=False
+        )
         mock_checker.run.assert_called_once_with(target_path=test_file, recursive=True)
 
     @patch("checker.ImportChecker")
@@ -245,7 +247,9 @@ class TestMainFunction:
             result = main()
 
         assert result == 0
-        mock_checker_class.assert_called_once_with(check_mode=False, verbose=False, quiet=False)
+        mock_checker_class.assert_called_once_with(
+            check_mode=False, verbose=False, quiet=False, remove_possible_reexports=False
+        )
         mock_checker.run.assert_called_once_with(target_path=test_file, recursive=True)
 
     @patch("validators.runner.run_validators")
@@ -316,7 +320,9 @@ class TestMainFunction:
             result = main()
 
         assert result == 0
-        mock_checker_class.assert_called_once_with(check_mode=True, verbose=True, quiet=False)
+        mock_checker_class.assert_called_once_with(
+            check_mode=True, verbose=True, quiet=False, remove_possible_reexports=False
+        )
 
     @patch("checker.ImportChecker")
     def test_main_no_recursive(self, mock_checker_class, tmp_path):

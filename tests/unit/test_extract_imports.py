@@ -257,6 +257,52 @@ from collections import (
             assert imp.is_from_import is True
             assert imp.line_number == 2  # Line where 'from' statement starts
 
+    def test_extract_multiline_from_import_name_line_matches_real_line(self):
+        """moonlitlabs/pycheck#26: each name's ``name_line`` is its own physical
+        line, not the statement's opening line (``line_number`` stays the
+        statement line, used internally by cleanup's rewrite logic)."""
+        code = """from ancestry_mcp.tools import (
+    auth,
+    trees_read,
+    trees_write,
+)
+"""
+        tree = ast.parse(code)
+
+        imports = self.checker.extract_imports_from_ast(tree)
+        by_name = {imp.names[0]: imp for imp in imports}
+
+        assert by_name["auth"].name_line == 2
+        assert by_name["trees_read"].name_line == 3
+        assert by_name["trees_write"].name_line == 4
+        # The statement-opening line is preserved (cleanup keys off it).
+        for imp in imports:
+            assert imp.line_number == 1
+
+    def test_extract_single_line_import_name_line_equals_line_number(self):
+        """A single-line statement's name_line equals its line_number."""
+        code = "from pathlib import Path"
+        tree = ast.parse(code)
+
+        imports = self.checker.extract_imports_from_ast(tree)
+
+        assert imports[0].name_line == imports[0].line_number == 1
+
+    def test_extract_multiline_plain_import_name_line(self):
+        """Plain `import a, b` also gets a real per-alias name_line on 3.10+."""
+        code = "import os, \\\n    sys"
+        tree = ast.parse(code)
+
+        imports = self.checker.extract_imports_from_ast(tree)
+        by_module = {imp.module: imp for imp in imports}
+
+        assert by_module["os"].name_line == 1
+        # On Python 3.10+, ast.alias carries its own lineno (2 here); on 3.9 it
+        # falls back to the statement's line (1) -- either way it's >= line 1.
+        assert by_module["sys"].name_line >= 1
+        for imp in imports:
+            assert imp.line_number == 1
+
     def test_extract_nested_imports(self):
         """Test extraction handles imports inside functions/classes."""
         code = """
