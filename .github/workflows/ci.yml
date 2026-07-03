@@ -3,6 +3,7 @@ name: CI
 # GitHub Actions CI for the public GitHub mirror (dependably/python-check).
 #
 # Flow:  secret-scan + lint + test  →  build
+#        sbom (production-only CycloneDX 1.6 SBOM, uploaded as a build artifact)
 #
 # This is the GitHub-side counterpart to .gitlab-ci.yml. GitLab remains the
 # authoritative pipeline (lint, tests, security scans, SBOM, private-registry
@@ -104,6 +105,30 @@ jobs:
           path: dist/*
           retention-days: 7
 
+  # Production-only CycloneDX 1.6 SBOM, uploaded as a build artifact on every run
+  # (push / PR / tag). Generated from a venv with ONLY runtime deps installed
+  # (`pip install .`, not the `[dev]` extra), so it reflects exactly what ships on
+  # PyPI — pycheck itself declares no runtime dependencies, so this captures the true
+  # shipped closure. On a `v*` tag the release job downloads this same sbom.json, signs
+  # it (keyless OIDC/sigstore), and attaches it to the GitHub Release.
+  sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m venv /tmp/sbom-venv && /tmp/sbom-venv/bin/pip install --upgrade pip && /tmp/sbom-venv/bin/pip install .
+      - run: pip install cyclonedx-bom
+      - run: cyclonedx-py environment /tmp/sbom-venv --output-format JSON --outfile sbom.json --schema-version 1.6
+      - uses: actions/upload-artifact@v5
+        with:
+          name: sbom
+          path: sbom.json
+          retention-days: 7
+
   # Release the wheel + sdist with signed SLSA build provenance — runs only on a
   # `v*` tag, and only after the gating jobs pass. The attestation is generated
   # with GitHub's keyless OIDC/sigstore flow (no stored signing key), covers the
@@ -111,7 +136,7 @@ jobs:
   #   gh attestation verify <file> -R dependably/python-check
   # This is what raises the released artifact from SLSA Build L0 to L2.
   release:
-    needs: [secret-scan, lint, test, build]
+    needs: [secret-scan, lint, test, build, sbom]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -157,3 +182,24 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist/* \
             --title "$GITHUB_REF_NAME" --generate-notes \
           || gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+      # Production-dependency SBOM: pull the exact bytes the `sbom` job produced, sign
+      # them with the same keyless OIDC/sigstore flow, and attach the SBOM plus its
+      # sigstore bundle to the Release so consumers can verify what shipped:
+      #   gh attestation verify sbom.json -R dependably/python-check
+      - name: Download SBOM
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom
+          path: .
+      - name: Attest SBOM
+        id: attest_sbom
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: sbom.json
+      - name: Attach signed SBOM to the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          cp "${{ steps.attest_sbom.outputs.bundle-path }}" sbom.json.sigstore.json
+          gh release upload "$GITHUB_REF_NAME" sbom.json sbom.json.sigstore.json --clobber
