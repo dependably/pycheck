@@ -68,6 +68,18 @@ python src/checker.py --validate .
 - `from __future__ import ...` is skipped (compiler directives, never "unused")
 - Cleanup preserves formatting, handles parenthesized/backslash-continued
   statements, keeps inline comments, and writes a `.backup` before modifying
+- `ImportInfo.line_number` is the *statement's* opening line (cleanup's rewrite
+  logic keys off it); `ImportInfo.name_line` is the individual name/alias's own
+  physical line (its `ast.alias.lineno`, falling back to the statement line on
+  Python 3.9, which predates per-alias position info) and is what reports/JSON
+  `location.line` show — a multi-line `from x import (a, b, c)` no longer
+  blames every name on the opening `(` line
+- `_classify_intentional_imports` downgrades unused imports that look like a
+  deliberate side-effect/re-export (an `__init__.py`, a dotted whole-module
+  `import pkg.sub` never attribute-accessed, or a `from pkg import ...`
+  statement that is entirely unused across >= 3 names) to a separate
+  `possible-intentional-import` finding; `--cleanup` never removes these
+  without the `--remove-possible-reexports` opt-in — see moonlitlabs/pycheck#26
 
 **CLI conventions:**
 - `--check`/`--cleanup`/`--validate` are a required mutually-exclusive group
@@ -83,3 +95,9 @@ python src/checker.py --validate .
   gate is **additive**: it can only escalate an otherwise-clean run (exit 0) to a
   finding (exit 1) — it never relaxes the default `--check`/`--validate` gates.
   `run_validators` takes a `fail_on` kwarg so the gate also applies in `--validate`.
+- `--check` is quiet by default: a clean file prints nothing (`--verbose` restores
+  the per-file stream); `run()`'s summary reports the clean-file count and, when
+  findings > 0, a `run --cleanup` hint. Paths print relative to the cwd when
+  possible (`ImportChecker._display_path`), matching the JSON envelope's `target`.
+- `--remove-possible-reexports` opts `--cleanup` into also removing imports
+  flagged `possibly_intentional` (see above); off by default.

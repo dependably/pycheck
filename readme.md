@@ -41,6 +41,8 @@ Options:
 - `--fail-on <key>=<value>` — CI gate (repeatable). Exit `1` when a rule trips:
   `severity=<critical|high|moderate|low|info>` trips at or above that level;
   `count=<N>` trips when total findings exceed `N`.
+- `--remove-possible-reexports` — cleanup-mode opt-in: also remove imports flagged as
+  possibly-intentional (see below). Off by default.
 - `--version`, `--help`
 
 ### Examples
@@ -51,6 +53,46 @@ import-checker --cleanup myfile.py         # remove unused imports (creates myfi
 import-checker --validate .                # validate packaging config in this repo
 import-checker --check ./src --format json --fail-on severity=high
 ```
+
+### Check-mode output
+
+`--check` is quiet by default: a clean file prints nothing (pass `--verbose` to see every
+file, including "No unused imports found"). A file with findings prints its unused
+imports, real line-per-name, followed by a `run --cleanup` hint when any were found:
+
+```
+Analyzing: src/server.py
+  Found 1 unused import:
+    Line 12: json  (from typing)
+
+Analysis complete:
+  Files processed: 3
+  1 unused import found
+  2 files clean
+
+Run 'import-checker --cleanup src' to fix (writes a .backup beside each modified file;
+possibly-intentional imports are left in place unless --remove-possible-reexports is
+also set).
+```
+
+### Possibly-intentional imports
+
+An import that is never referenced by name can still be intentional: a module imported
+purely to run its side effects at import time (e.g. a decorator that registers a
+plugin/tool), or a package's re-exported public API, looks identical to dead code by
+reference counting alone. `import-checker` downgrades these shapes to a separate
+"possibly-intentional" category instead of calling them unused, and `--cleanup` never
+removes them without the `--remove-possible-reexports` opt-in:
+
+- imports in a package's `__init__.py` (overwhelmingly re-exports),
+- a bare, dotted whole-module import (`import pkg.sub`) that is never attribute-accessed,
+- a `from pkg import a, b, c` statement where **every** name (3 or more) is unused — the
+  shape a plugin/tool-registry import takes, where each name exists only to trigger a
+  decorator side effect, never to be referenced by its local identifier.
+
+They are reported under the `possible-intentional-import` JSON `ruleId` (severity `low`,
+vs. `unused-import`'s `high`) so CI/editor consumers can tell "clear dead code" apart from
+"review before removing".
 
 ## Exit codes
 

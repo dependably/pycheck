@@ -112,6 +112,10 @@ def gate_trips(raw_findings: List[Dict[str, Any]], rules: List[Tuple[str, str]])
 # Short, optional remediation hints keyed by ruleId. Anything absent -> null.
 _REMEDIATION: Dict[str, str] = {
     "unused-import": "Remove the unused import.",
+    "possible-intentional-import": (
+        "Verify this import is intentional (side-effect / re-export) before removing it; "
+        "--cleanup leaves it in place unless --remove-possible-reexports is also passed."
+    ),
 }
 
 
@@ -192,11 +196,24 @@ class ImportInfo:
         alias: Optional[str] = None,
         line_number: int = 0,
         is_from_import: bool = False,
+        name_line: Optional[int] = None,
     ):
         self.module = module  # The module being imported
         self.names = names  # List of names being imported (empty for 'import module')
         self.alias = alias  # Alias if used (as clause)
+        # The *statement's* opening line (e.g. the `from`/`import` keyword's
+        # line). Cleanup keys off this to locate and rewrite the statement, so
+        # it deliberately stays the same for every name sharing one statement
+        # -- see ``name_line`` below for the line to report to a human.
         self.line_number = line_number
+        # The individual name/alias's own line. For a single-line statement
+        # this equals ``line_number``; for a multi-line `from x import (...)`
+        # it is the physical line that name actually appears on, so reports
+        # (and JSON ``location.line``) point at the right place instead of
+        # every name being blamed on the opening line. Defaults to
+        # ``line_number`` so directly-constructed ``ImportInfo`` objects
+        # (as used throughout the test suite) keep their existing behaviour.
+        self.name_line = name_line if name_line is not None else line_number
         self.is_from_import = is_from_import  # True for 'from X import Y'
         self.used = False  # Track if this import is used
         # Every name/alias sharing this physical line (for partial rewrites).
@@ -208,6 +225,13 @@ class ImportInfo:
         # True when this import is the only statement in its (non-module) block;
         # removing it would leave an empty block that no longer parses.
         self.sole_in_block = False
+        # Set by ImportChecker._classify_intentional_imports: True when this
+        # unused import matches a likely-intentional shape (side-effect
+        # import / re-export) so it is reported separately and never
+        # auto-removed in --cleanup without the --remove-possible-reexports
+        # opt-in. See moonlitlabs/pycheck#26.
+        self.possibly_intentional = False
+        self.intentional_reason: Optional[str] = None
 
     @property
     def safe_to_remove(self) -> bool:
@@ -731,7 +755,13 @@ def scoped_import_usage(tree: ast.AST) -> Tuple[Set[Tuple[int, str]], Set[str]]:
 class ImportChecker:
     """Main class for handling Python import checking and cleanup."""
 
-    def __init__(self, check_mode: bool = True, verbose: bool = False, quiet: bool = False):
+    def __init__(
+        self,
+        check_mode: bool = True,
+        verbose: bool = False,
+        quiet: bool = False,
+        remove_possible_reexports: bool = False,
+    ):
         """
         Initialize the ImportChecker.
 
@@ -741,12 +771,20 @@ class ImportChecker:
             quiet: Suppress all human-readable stdout (used by ``--format json`` so
                 stdout carries only the JSON document). Findings are still
                 collected in ``self.findings``.
+            remove_possible_reexports: Opt-in for --cleanup to also remove imports
+                flagged as possibly-intentional (see
+                ``_classify_intentional_imports``). Off by default: those imports
+                are reported separately and left in place.
         """
         self.check_mode = check_mode
         self.verbose = verbose
         self.quiet = quiet
+        self.remove_possible_reexports = remove_possible_reexports
         self.processed_files = 0
         self.total_issues = 0
+        # Files with zero findings in --check mode (not printed by default; see
+        # _report_check). Surfaced in the run summary as "N files clean".
+        self.clean_files = 0
         # Machine-readable findings, collected regardless of output format.
         self.findings: List[Dict[str, Any]] = []
 
@@ -756,19 +794,54 @@ class ImportChecker:
             print(f"[VERBOSE] {message}")
 
     def _record_findings(self, file_path: Path, unused_imports: List[ImportInfo]) -> None:
-        """Append one finding per unused import to the machine-readable list."""
+        """Append one finding per unused import to the machine-readable list.
+
+        ``line`` is the name's own real line (``name_line``), not the opening
+        line of a multi-line statement. Imports flagged as possibly-intentional
+        (see ``_classify_intentional_imports``) are recorded under a distinct,
+        lower ``possible-intentional-import`` severity so a JSON/CI consumer
+        can tell "clear dead code" apart from "review before removing" --
+        moonlitlabs/pycheck#26.
+        """
+        display_path = self._display_path(file_path)
         for import_info in unused_imports:
-            self.findings.append(
-                {
-                    "code": "unused-import",
-                    "file": str(file_path),
-                    "line": import_info.line_number,
-                    "message": f"unused import: {self._format_import(import_info)}",
-                    # Unused imports block the gate (exit 1) in check mode, so they
-                    # are reported as errors, mirroring the validator severity model.
-                    "severity": "error",
-                }
-            )
+            if import_info.possibly_intentional:
+                self.findings.append(
+                    {
+                        "code": "possible-intentional-import",
+                        "file": display_path,
+                        "line": import_info.name_line,
+                        "message": (
+                            f"possibly-intentional import ({import_info.intentional_reason}): "
+                            f"{self._describe_unused(import_info)}"
+                        ),
+                        "severity": "warning",
+                    }
+                )
+            else:
+                self.findings.append(
+                    {
+                        "code": "unused-import",
+                        "file": display_path,
+                        "line": import_info.name_line,
+                        "message": f"unused import: {self._describe_unused(import_info)}",
+                        # Unused imports block the gate (exit 1) in check mode, so
+                        # they are reported as errors, mirroring the validator
+                        # severity model.
+                        "severity": "error",
+                    }
+                )
+
+    @staticmethod
+    def _alias_line(node: "ast.stmt", alias: ast.alias) -> int:
+        """The physical line a single import name/alias appears on.
+
+        ``ast.alias`` only gained its own ``lineno`` in Python 3.10 (position
+        info previously lived solely on the parent ``Import``/``ImportFrom``
+        node); on 3.9 -- the tool's minimum supported version -- every alias
+        falls back to the statement's opening line, same as before.
+        """
+        return getattr(alias, "lineno", None) or node.lineno
 
     def extract_imports_from_ast(self, tree: ast.AST) -> List[ImportInfo]:
         """
@@ -796,6 +869,7 @@ class ImportChecker:
                         alias=alias.asname,
                         line_number=node.lineno,
                         is_from_import=False,
+                        name_line=self._alias_line(node, alias),
                     )
                     # Record the modules/aliases sharing this line so cleanup can
                     # partially rewrite `import a, b` instead of dropping the line.
@@ -829,6 +903,7 @@ class ImportChecker:
                         alias=alias.asname,
                         line_number=node.lineno,
                         is_from_import=True,
+                        name_line=self._alias_line(node, alias),
                     )
                     # Store reference to all names on the same line for cleanup
                     import_info.all_names_on_line = all_names
@@ -988,6 +1063,67 @@ class ImportChecker:
                 import_info.used = False
                 newly_unused.append(import_info)
         return still_used, unused_imports + newly_unused
+
+    @staticmethod
+    def _classify_intentional_imports(file_path: Path, unused_imports: List[ImportInfo]) -> None:
+        """Flag unused imports that match a likely-intentional shape.
+
+        Static analysis cannot prove an import is dead code: a module imported
+        purely to run its side effects at import time (e.g. a decorator that
+        registers a plugin/tool) or re-exported for a package's public API is
+        indistinguishable, by reference-counting alone, from a stale import --
+        both are simply "never referenced by name". Calling either "unused" is
+        a false positive, and since --cleanup acts on the same analysis,
+        following that advice can delete a live registration import and break
+        the program at runtime (moonlitlabs/pycheck#26). This narrows to shapes
+        where guessing "intentional" is a safe bet, and marks matches so they
+        are reported separately and never auto-removed without the
+        ``--remove-possible-reexports`` opt-in:
+
+          * ``__init__.py`` -- imports there are overwhelmingly re-exports of
+            the package's public API.
+          * a bare ``import pkg.sub`` (dotted, whole-module, no ``from``) that
+            is never attribute-accessed -- the common shape for a side-effect
+            import (e.g. a Django-style ``import myapp.signal_handlers``).
+            A single-segment ``import os`` is deliberately excluded: an unused
+            top-level import like that is far more often simple dead code.
+          * a ``from pkg import a, b, c`` statement where *every* name is
+            unused (>= 3 names) -- a statement with some names used and others
+            not is ordinary dead code, but one that is unused in its entirety
+            is the shape a plugin/tool-registry import takes: each bound name
+            exists only to trigger a decorator side effect, never to be
+            referenced by its local identifier (the ticket's own repro: an
+            8-name ``from ancestry_mcp.tools import auth, ..., trees_write``).
+
+        Names re-exported via ``__all__`` never reach this method at all --
+        ``analyze_imports``/``_refine_with_scopes`` already treat them as used.
+        """
+        is_init = file_path.name == "__init__.py"
+
+        from_unused_by_line: Dict[int, List[ImportInfo]] = {}
+        for import_info in unused_imports:
+            if import_info.is_from_import:
+                from_unused_by_line.setdefault(import_info.line_number, []).append(import_info)
+        bulk_lines = {
+            line
+            for line, group in from_unused_by_line.items()
+            if len(group[0].all_names_on_line) >= 3 and len(group) == len(group[0].all_names_on_line)
+        }
+
+        for import_info in unused_imports:
+            if is_init:
+                import_info.possibly_intentional = True
+                import_info.intentional_reason = "package __init__.py (likely intentional re-export)"
+            elif not import_info.is_from_import and "." in import_info.module:
+                import_info.possibly_intentional = True
+                import_info.intentional_reason = (
+                    "dotted module import, never attribute-accessed (possible side-effect import)"
+                )
+            elif import_info.is_from_import and import_info.line_number in bulk_lines:
+                import_info.possibly_intentional = True
+                import_info.intentional_reason = (
+                    "every name in this multi-import statement is unused (possible plugin/registration import)"
+                )
 
     def remove_unused_imports(self, content: str, unused_imports: List[ImportInfo]) -> str:
         """
@@ -1300,6 +1436,44 @@ class ImportChecker:
             import_str += f" as {import_info.alias}"
         return import_str
 
+    @staticmethod
+    def _describe_unused(import_info: ImportInfo) -> str:
+        """Human-readable "name + origin" description of an unused import.
+
+        Unlike :meth:`_format_import`, this never pretends a synthesized
+        single-name statement (e.g. ``from x import c``) is literally present
+        in the source: a multi-line ``from x import (a, b, c)`` never contains
+        that text on any one physical line, so reporting it that way is
+        misleading, especially once paired with the name's own real line
+        number (see ``ImportInfo.name_line``).
+        """
+        if import_info.is_from_import:
+            name = import_info.names[0] if import_info.names else ""
+            shown = f"{name} as {import_info.alias}" if import_info.alias else name
+            return f"{shown}  (from {import_info.module})"
+        shown = f"{import_info.module} as {import_info.alias}" if import_info.alias else import_info.module
+        return f"import {shown}"
+
+    @staticmethod
+    def _plural(count: int, word: str) -> str:
+        """Pluralize ``word`` by simple 's'-suffix unless ``count`` is exactly 1."""
+        return word if count == 1 else f"{word}s"
+
+    @staticmethod
+    def _display_path(path: Path) -> str:
+        """``path`` relative to the current working directory when possible.
+
+        Matches the JSON envelope's ``target`` convention (a relative target
+        stays relative) instead of always showing the same long absolute
+        prefix on every line. Falls back to the absolute path when ``path``
+        does not lie under the cwd (e.g. the target was given via an
+        unrelated absolute path, or in tests using a tmp directory).
+        """
+        try:
+            return str(path.relative_to(Path.cwd()))
+        except ValueError:
+            return str(path)
+
     def _read_and_parse(self, file_path: Path) -> Tuple[str, ast.AST, str]:
         """Read a file and parse it into an AST.
 
@@ -1324,21 +1498,48 @@ class ImportChecker:
         return content, tree, encoding
 
     def _report_check(self, file_path: Path, used_imports: List[ImportInfo], unused_imports: List[ImportInfo]) -> None:
-        """Print read-only analysis results for one file."""
+        """Print read-only analysis results for one file.
+
+        Quiet by default: a clean file (no findings) prints nothing unless
+        ``--verbose`` is set, so a run over a large tree is not dominated by
+        "Analyzing: .../No unused imports found" noise for the files that need
+        no attention; ``run`` reports the clean-file count in its summary
+        instead. Definite unused imports and possibly-intentional ones (see
+        ``_classify_intentional_imports``) are listed in separate, clearly
+        labelled sections.
+        """
         if self.quiet:
             return
-        print(f"Analyzing: {file_path}")
-        if unused_imports:
-            print(f"  Found {len(unused_imports)} unused import(s):")
-            for import_info in unused_imports:
-                print(f"    Line {import_info.line_number}: {self._format_import(import_info)}")
-        else:
-            print("  No unused imports found")
+
+        definite = [imp for imp in unused_imports if not imp.possibly_intentional]
+        hedged = [imp for imp in unused_imports if imp.possibly_intentional]
+        display_path = self._display_path(file_path)
+
+        if not definite and not hedged:
+            self.clean_files += 1
+            if self.verbose:
+                print(f"Analyzing: {display_path}")
+                print("  No unused imports found")
+            return
+
+        print(f"Analyzing: {display_path}")
+        if definite:
+            self._print_import_section(
+                f"  Found {len(definite)} unused {self._plural(len(definite), 'import')}:", definite
+            )
+        if hedged:
+            self._print_import_section(
+                f"  {len(hedged)} possibly-intentional {self._plural(len(hedged), 'import')} "
+                "(side-effect / re-export -- not removed by --cleanup unless "
+                "--remove-possible-reexports is set; verify before deleting):",
+                hedged,
+                with_reason=True,
+            )
 
         if self.verbose:
             print(f"  Used imports: {len(used_imports)}")
             for import_info in used_imports:
-                print(f"    Line {import_info.line_number}: {self._format_import(import_info)}")
+                print(f"    Line {import_info.name_line}: {self._format_import(import_info)}")
 
     def _report_cleanup(
         self,
@@ -1347,43 +1548,76 @@ class ImportChecker:
         unused_imports: List[ImportInfo],
         encoding: str = "utf-8",
     ) -> None:
-        """Remove unused imports from a file (with backup) and print results."""
+        """Remove unused imports from a file (with backup) and print results.
+
+        Imports flagged as possibly-intentional (side-effect / re-export --
+        see ``_classify_intentional_imports``) are never removed here unless
+        ``self.remove_possible_reexports`` was explicitly opted into; they are
+        reported in their own section instead of being silently deleted, so
+        following the default cleanup advice cannot break a program that
+        relies on one of them at runtime (moonlitlabs/pycheck#26).
+        """
+        display_path = self._display_path(file_path)
         if not self.quiet:
-            print(f"Cleaning: {file_path}")
+            print(f"Cleaning: {display_path}")
         if not unused_imports:
             if not self.quiet:
                 print("  No unused imports to remove")
             return
 
         # Imports whose removal would corrupt code are reported but left untouched.
-        removable = [imp for imp in unused_imports if imp.safe_to_remove]
-        skipped = [imp for imp in unused_imports if not imp.safe_to_remove]
+        unsafe = [imp for imp in unused_imports if not imp.safe_to_remove]
+        hedged = [
+            imp
+            for imp in unused_imports
+            if imp.safe_to_remove and imp.possibly_intentional and not self.remove_possible_reexports
+        ]
+        removable = [
+            imp
+            for imp in unused_imports
+            if imp.safe_to_remove and (not imp.possibly_intentional or self.remove_possible_reexports)
+        ]
 
         if removable:
-            if not self.quiet:
-                print(f"  Removing {len(removable)} unused import(s)")
+            self._apply_cleanup_removal(file_path, content, removable, encoding)
 
-            # Create a backup before modifying.
-            backup_path = file_path.with_suffix(file_path.suffix + ".backup")
-            self.log_verbose(f"Creating backup: {backup_path}")
-            shutil.copy2(file_path, backup_path)
+        if hedged and not self.quiet:
+            self._print_import_section(
+                f"  Kept {len(hedged)} possibly-intentional {self._plural(len(hedged), 'import')} "
+                "(pass --remove-possible-reexports to remove):",
+                hedged,
+                with_reason=True,
+            )
 
-            modified_content = self.remove_unused_imports(content, removable)
-            # Write back with the encoding we read and without newline
-            # translation, so line endings and non-UTF-8 bytes are preserved.
-            with open(file_path, "w", encoding=encoding, newline="") as file:
-                file.write(modified_content)
+        if unsafe and not self.quiet:
+            self._print_import_section("  Left in place (unsafe to auto-remove):", unsafe)
 
-            if not self.quiet:
-                print("  Removed imports:")
-                for import_info in removable:
-                    print(f"    Line {import_info.line_number}: {self._format_import(import_info)}")
-                print(f"  Backup saved as: {backup_path}")
+    def _apply_cleanup_removal(self, file_path: Path, content: str, removable: List[ImportInfo], encoding: str) -> None:
+        """Back up, rewrite and print the results for the safely-removable imports."""
+        if not self.quiet:
+            print(f"  Removing {len(removable)} unused {self._plural(len(removable), 'import')}")
 
-        if skipped and not self.quiet:
-            print("  Left in place (unsafe to auto-remove):")
-            for import_info in skipped:
-                print(f"    Line {import_info.line_number}: {self._format_import(import_info)}")
+        # Create a backup before modifying.
+        backup_path = file_path.with_suffix(file_path.suffix + ".backup")
+        self.log_verbose(f"Creating backup: {backup_path}")
+        shutil.copy2(file_path, backup_path)
+
+        modified_content = self.remove_unused_imports(content, removable)
+        # Write back with the encoding we read and without newline translation,
+        # so line endings and non-UTF-8 bytes are preserved.
+        with open(file_path, "w", encoding=encoding, newline="") as file:
+            file.write(modified_content)
+
+        if not self.quiet:
+            self._print_import_section("  Removed imports:", removable)
+            print(f"  Backup saved as: {self._display_path(backup_path)}")
+
+    def _print_import_section(self, header: str, imports: List[ImportInfo], with_reason: bool = False) -> None:
+        """Print a labelled ``Line N: description`` list of imports."""
+        print(header)
+        for import_info in imports:
+            suffix = f" [{import_info.intentional_reason}]" if with_reason else ""
+            print(f"    Line {import_info.name_line}: {self._describe_unused(import_info)}{suffix}")
 
     def process_file(self, file_path: Path) -> None:
         """
@@ -1418,6 +1652,7 @@ class ImportChecker:
 
             used_imports, unused_imports = self.analyze_imports(imports, references)
             used_imports, unused_imports = self._refine_with_scopes(tree, used_imports, unused_imports)
+            self._classify_intentional_imports(file_path, unused_imports)
 
             self.processed_files += 1
             self.total_issues += len(unused_imports)
@@ -1543,7 +1778,15 @@ class ImportChecker:
                 mode_str = "Analysis" if self.check_mode else "Cleanup"
                 print(f"\n{mode_str} complete:")
                 print(f"  Files processed: {self.processed_files}")
-                print(f"  Issues found: {self.total_issues}")
+                print(f"  {self.total_issues} {self._plural(self.total_issues, 'unused import')} found")
+                if self.check_mode and not self.verbose and self.clean_files:
+                    print(f"  {self.clean_files} {self._plural(self.clean_files, 'file')} clean")
+                if self.check_mode and self.total_issues > 0:
+                    print(
+                        f"\nRun 'import-checker --cleanup {target_path}' to fix "
+                        "(writes a .backup beside each modified file; possibly-intentional "
+                        "imports are left in place unless --remove-possible-reexports is also set)."
+                    )
 
         except ImportCheckerError:
             raise
@@ -1652,6 +1895,18 @@ Examples:
             "gate (unused imports / validation errors still gate on their own)."
         ),
     )
+    parser.add_argument(
+        "--remove-possible-reexports",
+        action="store_true",
+        help=(
+            "In --cleanup mode, also remove imports flagged as possibly-intentional "
+            "(side-effect / re-export candidates: __init__.py, a dotted whole-module "
+            "import, or a multi-name from-import that is entirely unused). Off by "
+            "default -- review the 'possibly-intentional' report before opting in, "
+            "since removing one of these can break code that relies on its import-time "
+            "side effect."
+        ),
+    )
     parser.add_argument("--version", action="version", version=f"python-import-checker {__version__}")
 
     return parser
@@ -1691,7 +1946,12 @@ def _run_import_check(args: argparse.Namespace, fail_on: Optional[List[Tuple[str
         print(f"Running in {mode_str} mode on: {args.target}", file=stream)
         print(f"Recursive: {args.recursive}", file=stream)
 
-    checker = ImportChecker(check_mode=check_mode, verbose=args.verbose, quiet=json_mode)
+    checker = ImportChecker(
+        check_mode=check_mode,
+        verbose=args.verbose,
+        quiet=json_mode,
+        remove_possible_reexports=args.remove_possible_reexports,
+    )
     checker.run(target_path=args.target, recursive=args.recursive)
 
     # In check mode, exit non-zero when unused imports are found so the tool can

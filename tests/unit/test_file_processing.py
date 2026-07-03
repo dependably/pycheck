@@ -39,10 +39,11 @@ def main():
         # Check that analysis output was printed
         print_calls = [call[0][0] for call in mock_print.call_args_list]
         assert any("Analyzing:" in call for call in print_calls)
-        assert any("Found 1 unused import(s):" in call for call in print_calls)
+        # #26: real singular/plural noun, not "import(s)".
+        assert any("Found 1 unused import:" in call for call in print_calls)
 
     def test_process_file_no_unused_imports(self, tmp_path):
-        """Test processing file with no unused imports."""
+        """Test processing a clean file: quiet by default (#26), no findings recorded."""
         test_file = tmp_path / "test.py"
         test_file.write_text("""import os
 import sys
@@ -56,9 +57,27 @@ def main():
 
         assert self.checker.processed_files == 1
         assert self.checker.total_issues == 0
+        assert self.checker.clean_files == 1
 
-        # Check that no issues were reported
+        # Clean files are quiet by default -- nothing is printed for them.
+        mock_print.assert_not_called()
+
+    def test_process_file_no_unused_imports_verbose(self, tmp_path):
+        """#26: --verbose still prints the per-file 'No unused imports found' line."""
+        self.checker = ImportChecker(check_mode=True, verbose=True)
+        test_file = tmp_path / "test.py"
+        test_file.write_text("""import os
+import sys
+
+def main():
+    return os.getcwd(), sys.version
+""")
+
+        with patch("builtins.print") as mock_print:
+            self.checker.process_file(test_file)
+
         print_calls = [call[0][0] for call in mock_print.call_args_list]
+        assert any("Analyzing:" in call for call in print_calls)
         assert any("No unused imports found" in call for call in print_calls)
 
     def test_process_file_cleanup_mode(self, tmp_path):
@@ -91,7 +110,8 @@ def main():
         # Check output messages
         print_calls = [call[0][0] for call in mock_print.call_args_list]
         assert any("Cleaning:" in call for call in print_calls)
-        assert any("Removing 2 unused import(s)" in call for call in print_calls)
+        # #26: real singular/plural noun, not "import(s)".
+        assert any("Removing 2 unused imports" in call for call in print_calls)
 
     def test_process_file_nonexistent_file(self):
         """Test processing non-existent file."""
@@ -309,7 +329,10 @@ class TestRunMethod:
         print_calls = [call[0][0] for call in mock_print.call_args_list]
         assert any("Analysis complete:" in call for call in print_calls)
         assert any("Files processed: 1" in call for call in print_calls)
-        assert any("Issues found: 1" in call for call in print_calls)
+        # #26: summary wording aligned with the per-file "unused import(s)" noun.
+        assert any("1 unused import found" in call for call in print_calls)
+        # #26: findings > 0 -> a "run --cleanup to fix" hint is appended.
+        assert any("import-checker --cleanup" in call for call in print_calls)
 
     def test_run_with_directory(self, tmp_path):
         """Test run method with directory target."""
