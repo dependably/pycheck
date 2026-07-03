@@ -611,6 +611,14 @@ class ImportChecker:
             lines_to_remove.add(start_idx)
             return
 
+        # Preserve the parenthesized multi-line layout when a kept name carries
+        # an inline comment, so the comment survives (the single-line collapse
+        # below would otherwise drop every continuation-line comment).
+        if end_idx > start_idx and self._preserve_multiline_from_import(
+            lines, start_idx, end_idx, unused_pairs, lines_to_remove
+        ):
+            return
+
         module_name = unused_from_line[0].module
         new_import_line = f"from {module_name} import {', '.join(remaining_names)}"
         indent = original_line[: len(original_line) - len(original_line.lstrip())]
@@ -625,6 +633,59 @@ class ImportChecker:
             lines[start_idx] = f"{indent}{new_import_line}  {comment}{newline}"
         else:
             lines[start_idx] = f"{indent}{new_import_line}{newline}"
+
+    @staticmethod
+    def _from_entry_pair(code: str) -> Optional[Tuple[str, Optional[str]]]:
+        """Parse a single ``name``/``name as alias`` entry into a (name, alias) pair."""
+        entry = code.split("#", 1)[0].strip().rstrip(",").strip()
+        if not entry:
+            return None
+        if " as " in entry:
+            name, _, alias = entry.partition(" as ")
+            return name.strip(), alias.strip() or None
+        parts = entry.split()
+        return (parts[0], None) if len(parts) == 1 else None
+
+    def _preserve_multiline_from_import(
+        self,
+        lines: List[str],
+        start_idx: int,
+        end_idx: int,
+        unused_pairs: Set[Tuple[str, Optional[str]]],
+        lines_to_remove: Set[int],
+    ) -> bool:
+        """Drop only the unused-name lines of a parenthesized multi-line import.
+
+        Handles the common one-name-per-line layout where the opening line ends
+        with ``(``, the closing line is just ``)``, and each middle line holds a
+        single name. Returns True (and keeps the layout, comments intact) only
+        when a kept name carries an inline comment; otherwise returns False so
+        the caller falls back to the single-line collapse.
+        """
+        opening = lines[start_idx].split("#", 1)[0].rstrip()
+        closing = lines[end_idx].split("#", 1)[0].strip()
+        if not opening.endswith("(") or not closing.startswith(")"):
+            return False
+
+        keep_indices: Set[int] = set()
+        remove_indices: Set[int] = set()
+        for idx in range(start_idx + 1, end_idx):
+            pair = self._from_entry_pair(lines[idx])
+            if pair is None:
+                return False  # unclassifiable line — bail to the safe collapse
+            (remove_indices if pair in unused_pairs else keep_indices).add(idx)
+
+        # Only worth preserving the layout when a kept line has a comment to save.
+        if not keep_indices or not any("#" in lines[idx] for idx in keep_indices):
+            return False
+
+        lines_to_remove.discard(start_idx)
+        lines_to_remove.discard(end_idx)
+        for idx in keep_indices:
+            lines_to_remove.discard(idx)
+        for idx in remove_indices:
+            lines_to_remove.add(idx)
+        return True
 
     def _rewrite_plain_import(
         self,
