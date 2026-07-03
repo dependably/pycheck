@@ -77,13 +77,23 @@ _INDEX_KEYS = frozenset({"index-url", "extra-index-url"})
 
 
 def validate_pip_conf(
-    content: str, *, source: str = "pip.conf", allowed_hosts: Optional[Sequence[str]] = None
+    content: str,
+    *,
+    source: str = "pip.conf",
+    allowed_hosts: Optional[Sequence[str]] = None,
+    base_dir: Optional[Path] = None,
 ) -> ValidationResult:
     """Validate pip config INI content.
 
     ``allowed_hosts`` -- bare hostnames trusted in addition to the public
     defaults (:data:`PUBLIC_INDEX_HOSTS`); any index host outside that union is
     flagged ``PIP_UNTRUSTED_INDEX``. Defaults to empty.
+
+    ``base_dir`` -- the directory of the config file, used to resolve *relative*
+    ``cert``/``client-cert`` paths for the existence check. Absolute paths point
+    at deploy-time locations we cannot verify and are not checked; when
+    ``base_dir`` is ``None`` the existence check is skipped entirely (so results
+    never depend on the invoker's working directory).
     """
     trusted = _trusted_hosts(allowed_hosts)
     r = ValidationResult()
@@ -100,7 +110,7 @@ def validate_pip_conf(
         for key, value in parser.items(section):
             key_l = key.strip().lower()
             ln = line_index.get((section, key_l))
-            _check_key(key_l, value, ln, r, trusted)
+            _check_key(key_l, value, ln, r, trusted, base_dir)
     return r
 
 
@@ -109,7 +119,14 @@ def _trusted_hosts(allowed_hosts: Optional[Sequence[str]]) -> frozenset:
     return PUBLIC_INDEX_HOSTS | extra
 
 
-def _check_key(key: str, value: str, line: Optional[int], r: ValidationResult, trusted: frozenset) -> None:
+def _check_key(
+    key: str,
+    value: str,
+    line: Optional[int],
+    r: ValidationResult,
+    trusted: frozenset,
+    base_dir: Optional[Path] = None,
+) -> None:
     if key in _INDEX_KEYS:
         # extra-index-url may carry several whitespace/newline separated URLs.
         for url in value.split():
@@ -122,10 +139,14 @@ def _check_key(key: str, value: str, line: Optional[int], r: ValidationResult, t
         return
 
     if key in ("cert", "client-cert"):
-        if not value.strip():
+        val = value.strip()
+        if not val:
             r.add_error(f"{key} must be a non-empty path", "PIP_FIELD_TYPE", line)
-        elif not Path(value.strip()).exists():
-            r.add_warning(f"{key} path does not exist: {value.strip()!r}", "PIP_CERT_MISSING", line)
+        elif base_dir is not None and not Path(val).is_absolute():
+            # Resolve relative to the committed config's directory, never the
+            # invoker's CWD. Absolute paths are deploy-time and not checked.
+            if not (base_dir / val).exists():
+                r.add_warning(f"{key} path does not exist: {val!r}", "PIP_CERT_MISSING", line)
         return
 
     if key not in KNOWN_KEYS:
@@ -150,12 +171,15 @@ def _check_index_url(url: str, key: str, line: Optional[int], r: ValidationResul
             )
 
     scheme = parts.scheme.lower()
+    # A missing host is invalid for both http and https (checked independently of
+    # the insecure-scheme warning, which previously masked the no-host error for
+    # http:// URLs).
+    if scheme in ("http", "https") and not parts.hostname:
+        r.add_error(f"invalid {key} URL (no host): {url!r}", "PIP_INVALID_INDEX", line)
     if scheme == "http":
         r.add_warning(f"{key} over http:// ({url}) -- prefer https://", "PIP_INSECURE_INDEX", line)
     elif scheme not in ("https", "file"):
         r.add_error(f"unsupported {key} scheme {scheme!r} in {url!r}", "PIP_INVALID_INDEX_SCHEME", line)
-    elif scheme in ("http", "https") and not parts.hostname:
-        r.add_error(f"invalid {key} URL (no host): {url!r}", "PIP_INVALID_INDEX", line)
 
     # --- index host must be public or explicitly allowlisted ---
     if scheme in ("http", "https") and parts.hostname:
@@ -196,5 +220,7 @@ def _build_line_index(content: str) -> Dict[Tuple[str, str], int]:
         m = re.match(r"^\s*([^=:\s][^=:]*?)\s*[=:]", raw)
         if m:
             key = m.group(1).strip().lower()
-            index.setdefault((section, key), i)
+            # ConfigParser(strict=False) keeps the LAST value on a duplicate key,
+            # so point the finding at the last occurrence, not the first.
+            index[(section, key)] = i
     return index

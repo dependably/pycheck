@@ -17,22 +17,26 @@ import re
 NAME_RE = re.compile(r"^([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9])$")
 
 # PEP 440 version (pragmatic subset): optional epoch, release segments, optional
-# pre/post/dev releases, optional local version.
+# pre/post/dev releases, optional local version. PEP 440 permits ``.``, ``-`` or
+# ``_`` as the separator before pre/post/dev segments, several spellings of each
+# (``alpha``/``a``, ``post``/``rev``/``r``), and ``.``/``-``/``_`` inside the
+# local version -- accepting all of them avoids false ``invalid version`` errors.
 PEP440_RE = re.compile(
     r"^v?(\d+!)?\d+(\.\d+)*"  # epoch + release
-    r"((a|b|c|rc|alpha|beta|pre|preview)\.?\d*)?"  # pre-release
-    r"(\.post\.?\d*|-\d+)?"  # post-release
-    r"(\.dev\.?\d*)?"  # dev-release
-    r"(\+[A-Za-z0-9.]+)?$",  # local version
+    r"([-._]?(a|b|c|rc|alpha|beta|pre|preview)[-._]?\d*)?"  # pre-release
+    r"([-._]?(post|rev|r)[-._]?\d*|-\d+)?"  # post-release (incl. implicit ``-N``)
+    r"([-._]?dev[-._]?\d*)?"  # dev-release
+    r"(\+[A-Za-z0-9]+([-._][A-Za-z0-9]+)*)?$",  # local version
     re.IGNORECASE,
 )
 
 # A single version-specifier clause, e.g. ``>=1.2``, ``==1.0.*``, ``~=2.3``.
 _SPEC_CLAUSE_RE = re.compile(r"^(===|==|!=|~=|>=|<=|>|<)\s*[A-Za-z0-9][\w.*+!-]*$")
 
-# Leading name (with optional extras) of a PEP 508 requirement string.
+# Leading name (with optional extras) of a PEP 508 requirement string. The name
+# may not start or end with a separator (matching :data:`NAME_RE`).
 _REQ_HEAD_RE = re.compile(
-    r"^([A-Za-z0-9][A-Za-z0-9._-]*)"  # name
+    r"^([A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?)"  # name (no leading/trailing sep)
     r"(\s*\[[A-Za-z0-9,\s._-]+\])?"  # optional extras
 )
 
@@ -84,6 +88,10 @@ def is_valid_pep508(requirement: object) -> bool:
         return False
     head_end = m.end()
     rest = req[head_end:].strip()
+    # PEP 508 allows the version specifiers to be wrapped in parentheses,
+    # e.g. ``requests (>=2.0)``; unwrap them before validating the clauses.
+    if rest.startswith("(") and rest.endswith(")"):
+        rest = rest[1:-1].strip()
     if not rest:
         return True  # bare name (with optional extras)
 

@@ -104,3 +104,40 @@ class TestLineNumbers:
         r = validate_pip_conf(content)
         trusted = [e for e in r.errors if e.code == "PIP_TRUSTED_HOST"]
         assert trusted and trusted[0].line == 2
+
+
+class TestNoHostAndCertAndDuplicates:
+    """#22: http no-host, duplicate-key line, and cert-path resolution."""
+
+    def _errors(self, content, **kw):
+        return {e.code for e in validate_pip_conf(content, **kw).errors}
+
+    def _warnings(self, content, **kw):
+        return {w.code for w in validate_pip_conf(content, **kw).warnings}
+
+    def test_http_no_host_is_invalid(self):
+        codes = self._errors("[global]\nindex-url = http:///simple\n")
+        assert "PIP_INVALID_INDEX" in codes
+
+    def test_https_no_host_is_invalid(self):
+        codes = self._errors("[global]\nindex-url = https:///simple\n")
+        assert "PIP_INVALID_INDEX" in codes
+
+    def test_cert_existence_skipped_without_base_dir(self):
+        warns = self._warnings("[global]\ncert = /nonexistent/x.pem\n")
+        assert "PIP_CERT_MISSING" not in warns
+
+    def test_cert_relative_missing_flagged_with_base_dir(self, tmp_path):
+        warns = self._warnings("[global]\ncert = missing.pem\n", base_dir=tmp_path)
+        assert "PIP_CERT_MISSING" in warns
+
+    def test_cert_relative_present_ok_with_base_dir(self, tmp_path):
+        (tmp_path / "ca.pem").write_text("x")
+        warns = self._warnings("[global]\ncert = ca.pem\n", base_dir=tmp_path)
+        assert "PIP_CERT_MISSING" not in warns
+
+    def test_duplicate_key_reports_last_line(self):
+        content = "[global]\n" "index-url = https://pypi.org/simple\n" "index-url = https://evil.example/simple\n"
+        result = validate_pip_conf(content)
+        untrusted = [e for e in result.errors if e.code == "PIP_UNTRUSTED_INDEX"]
+        assert untrusted and untrusted[0].line == 3

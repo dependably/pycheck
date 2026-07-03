@@ -137,7 +137,9 @@ def _collect_results(
 
     for path, validator in files:
         try:
-            content = path.read_text(encoding="utf-8")
+            # utf-8-sig transparently strips a leading BOM (common on
+            # Windows-authored files) so it does not corrupt the first line.
+            content = path.read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError) as e:
             if not json_mode:
                 print(f"Validating: {path}")
@@ -154,7 +156,7 @@ def _collect_results(
             total_errors += 1
             continue
 
-        result = _invoke(validator, content, allowed_hosts)
+        result = _invoke(validator, content, allowed_hosts, path)
         if result.info.get("skipped"):
             total_skipped += 1
         total_errors += len(result.errors)
@@ -238,15 +240,16 @@ def _result_findings(path: Path, result: ValidationResult) -> List[Dict[str, Any
     return out
 
 
-def _invoke(validator: _Validator, content: str, allowed_hosts: Sequence[str]) -> ValidationResult:
+def _invoke(validator: _Validator, content: str, allowed_hosts: Sequence[str], path: Path) -> ValidationResult:
     """Call a validator, threading ``allowed_hosts`` into the index validators.
 
     The pip.conf and requirements validators take an ``allowed_hosts`` keyword;
-    pyproject does not. Dispatch by identity so each receives only what it
-    accepts.
+    pyproject does not. pip.conf also takes ``base_dir`` (the config's directory)
+    so relative cert paths resolve against the committed config, not the CWD.
+    Dispatch by identity so each receives only what it accepts.
     """
     if validator is validate_pip_conf:
-        return validate_pip_conf(content, allowed_hosts=allowed_hosts)
+        return validate_pip_conf(content, allowed_hosts=allowed_hosts, base_dir=path.parent)
     if validator is validate_requirements:
         return validate_requirements(content, allowed_hosts=allowed_hosts)
     return validator(content)

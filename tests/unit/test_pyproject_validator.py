@@ -109,3 +109,25 @@ class TestSkipPath:
         r = validate_pyproject({"project": {"name": "ok", "version": "1.0.0", "license": "MIT"}})
         assert r.info.get("skipped") is not True
         assert r.valid is True
+
+
+class TestBuildSystemAndDynamicName:
+    """#21: build-system.requires PEP 508 validation and dynamic-name rule."""
+
+    def test_build_system_requires_pep508_validated(self):
+        r = validate_pyproject(
+            '[build-system]\nrequires = ["not a @@@ req"]\n[project]\nname="ok"\nversion="1.0.0"\nlicense="MIT"\n'
+        )
+        assert "PP_INVALID_DEP" in _codes(r)
+
+    def test_build_system_requires_valid_ok(self):
+        r = validate_pyproject(
+            '[build-system]\nrequires = ["setuptools>=45", "wheel"]\n'
+            '[project]\nname="ok"\nversion="1.0.0"\nlicense="MIT"\n'
+        )
+        assert "PP_INVALID_DEP" not in _codes(r)
+
+    def test_dynamic_name_is_error(self):
+        r = validate_pyproject('[project]\ndynamic = ["name", "version"]\nlicense="MIT"\n')
+        assert "PP_DYNAMIC_NAME" in _codes(r)
+        assert "PP_MISSING_NAME" in _codes(r)
