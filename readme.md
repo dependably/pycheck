@@ -36,8 +36,9 @@ Options:
 - `--verbose`, `-v` — detailed output
 - `--format {human,json}` — output format (default `human`). `json` writes one
   machine-readable document to stdout; status/progress go to stderr.
-- `--config <path>` — path to a `.dependably-check` config (validate mode); by default
-  discovered by walking up from the target to the repo root.
+- `--config <path>` — path to a `.dependably` config (or the deprecated
+  `.dependably-check` alias) for validate mode; by default discovered by walking up
+  from the target to the repo root.
 - `--fail-on <key>=<value>` — CI gate (repeatable). Exit `1` when a rule trips:
   `severity=<critical|high|moderate|low|info>` trips at or above that level;
   `count=<N>` trips when total findings exceed `N`.
@@ -135,21 +136,53 @@ schema, so every tool in the suite parses the same way:
 }
 ```
 
-## Validate mode and `.dependably-check`
+## Validate mode and `.dependably`
 
 In `--validate` mode the tool flags any pip index host that is neither a public default
 (`pypi.org`, `files.pythonhosted.org`) nor allowlisted. Declare trusted private registries
-once in a repo-root `.dependably-check` JSON file:
+once in a repo-root `.dependably` JSON file (the deprecated `.dependably-check` filename is
+still read for the migration window, with a one-time stderr warning):
 
 ```json
 {
   "common": { "allowedRegistryHosts": ["dependably.northwardlabs.ca"] },
-  "python": { "allowedRegistryHosts": [] }
+  "pycheck": { "allowedRegistryHosts": [] }
 }
 ```
 
-The tool reads the union of `common.allowedRegistryHosts` and
-`python.allowedRegistryHosts`; other sections are ignored.
+The tool reads the union of `common.allowedRegistryHosts` and `pycheck.allowedRegistryHosts`
+(the section key `python` is the deprecated alias, still read with a warning); other
+top-level sections are ignored.
+
+### Rules, exceptions, and the CI gate
+
+`.dependably` is the shared, cross-tool config for the whole Dependably suite. Alongside
+the registry allowlist, pycheck reads its own section (`pycheck`) plus `common` for:
+
+- `rules` — per-rule severity (`error` / `warn` / `off`).
+- `failOn` — the file form of the `--fail-on` CI gate (`{ "severity": ..., "count": ... }`).
+  A CLI `--fail-on` overrides it.
+- `exceptions` — targeted suppression of specific findings without disabling a rule or
+  excluding whole files. Each entry needs a `rule` and a `reason`, plus at least one
+  selector (`package`, `id`); a `package@version` suffix pins to an exact version, and an
+  optional `expires: YYYY-MM-DD` date makes the exception inert (and warned about) after it
+  passes. Suppressed findings are still reported (with `"suppressed": true` in JSON) but no
+  longer gate the run.
+
+```json
+{
+  "pycheck": {
+    "failOn": { "severity": "high" },
+    "exceptions": [
+      { "rule": "REQ_UNTRUSTED_INDEX", "id": "REQ_UNTRUSTED_INDEX", "reason": "internal nexus" }
+    ]
+  }
+}
+```
+
+`common` and `pycheck` are merged per the suite convention: scalars and `failOn` in the tool
+section override `common`; list keys (`exclude`, `exceptions`, `allowedRegistryHosts`) union;
+`rules` merge per rule-id.
 
 ## License
 

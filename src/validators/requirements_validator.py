@@ -224,7 +224,7 @@ def _check_index_url(
         if host not in trusted:
             r.add_error(
                 f"{opt} host {host!r} is not a public index and is not allowlisted "
-                f"(add it to .dependably-check allowedRegistryHosts)",
+                f"(add it to .dependably allowedRegistryHosts)",
                 "REQ_UNTRUSTED_INDEX",
                 line=lineno,
             )

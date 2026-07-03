@@ -1902,7 +1902,10 @@ Examples:
         type=Path,
         default=None,
         metavar="PATH",
-        help="Path to a .dependably-check config (default: discovered by walking up from the target)",
+        help=(
+            "Path to a .dependably config (or the deprecated .dependably-check alias); "
+            "default: discovered by walking up from the target"
+        ),
     )
     parser.add_argument(
         "--fail-on",
