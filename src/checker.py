@@ -35,7 +35,7 @@ class ImportCheckerError(Exception):
 TOOL_NAME = "Dependably.pycheck"
 SCHEMA_VERSION = "1.0"
 
-# python-check's internal severities map onto the single shared ladder
+# pycheck's internal severities map onto the single shared ladder
 # (critical > high > moderate > low > info). error->high, warning->low.
 _SEVERITY_LADDER: Dict[str, str] = {"error": "high", "warning": "low"}
 
@@ -340,6 +340,19 @@ class _Scope:
         self.import_lines: Dict[str, Set[int]] = {}
 
 
+def _binds_locally(scope: _Scope, name: str) -> bool:
+    """Whether ``name`` is bound in ``scope`` for the purpose of resolving a load.
+
+    In a CLASS body only an import counts as a local binding: a class body runs
+    top-to-bottom and reads the enclosing name until a shadowing statement runs,
+    and we do not track statement order, so a non-import class-body binding must
+    NOT shadow an outer import (that would wrongly mark a used import unused).
+    """
+    if scope.kind == "class":
+        return name in scope.import_lines
+    return name in scope.bound
+
+
 def _resolve_scope(scope: _Scope, name: str) -> Optional[_Scope]:
     """Resolve a load of ``name`` in ``scope`` to the scope that binds it (LEGB).
 
@@ -353,19 +366,24 @@ def _resolve_scope(scope: _Scope, name: str) -> Optional[_Scope]:
             module = module.parent
         return module if name in module.bound else None
     if name in scope.nonlocals:
-        outer = scope.parent
-        while outer is not None:
-            if outer.kind == "function" and name in outer.bound:
-                return outer
-            outer = outer.parent
-        return None
-    if name in scope.bound:
+        return _nearest_function_binding(scope.parent, name)
+    if _binds_locally(scope, name):
         return scope
     outer = scope.parent
     while outer is not None:
         if outer.kind != "class" and name in outer.bound:
             return outer
         outer = outer.parent
+    return None
+
+
+def _nearest_function_binding(start: Optional[_Scope], name: str) -> Optional[_Scope]:
+    """Nearest enclosing function scope that binds ``name`` (for ``nonlocal``)."""
+    scope = start
+    while scope is not None:
+        if scope.kind == "function" and name in scope.bound:
+            return scope
+        scope = scope.parent
     return None
 
 
@@ -439,6 +457,21 @@ class _ScopeModelBuilder:
 
     def _walk_Attribute(self, node: ast.Attribute, scope: _Scope) -> None:
         self._walk(node.value, scope)
+
+    def _walk_Call(self, node: ast.Call, scope: _Scope) -> None:
+        # `cast("Decimal", x)` / `typing.cast(...)` — the first argument is a
+        # string forward reference; protect the names it uses (mirrors the flat
+        # pass, so the scoped refinement cannot un-protect what it kept).
+        func = node.func
+        is_cast = (isinstance(func, ast.Name) and func.id == "cast") or (
+            isinstance(func, ast.Attribute) and func.attr == "cast"
+        )
+        if is_cast and node.args:
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                self.protected.update(_forward_ref_names(first.value))
+        for child in ast.iter_child_nodes(node):
+            self._walk(child, scope)
 
     # --- imports -------------------------------------------------------------
 
@@ -552,7 +585,12 @@ class _ScopeModelBuilder:
 
     def _walk_NamedExpr(self, node: ast.AST, scope: _Scope) -> None:
         self._walk(node.value, scope)  # type: ignore[attr-defined]
-        self._bind_target(node.target, scope)  # type: ignore[attr-defined]
+        # PEP 572: a walrus inside a comprehension binds in the nearest enclosing
+        # non-comprehension scope, not the comprehension itself.
+        target_scope = scope
+        while target_scope.kind == "comprehension" and target_scope.parent is not None:
+            target_scope = target_scope.parent
+        self._bind_target(node.target, target_scope)  # type: ignore[attr-defined]
 
     # --- functions / classes (new scopes) ------------------------------------
 
@@ -570,6 +608,10 @@ class _ScopeModelBuilder:
         for arg in all_args:
             self._annotation(arg.annotation, scope)
         self._annotation(getattr(node, "returns", None), scope)
+        # PEP 695 type parameters (`def f[T: Bound]`) — their bounds/defaults
+        # reference names in the enclosing scope.
+        for type_param in getattr(node, "type_params", []):
+            self._walk(type_param, scope)
         self._bind(scope, node.name)  # type: ignore[attr-defined]
 
         fscope = self._new_scope("function", scope)
@@ -602,6 +644,8 @@ class _ScopeModelBuilder:
             self._walk(base, scope)
         for keyword in node.keywords:
             self._walk(keyword.value, scope)
+        for type_param in getattr(node, "type_params", []):
+            self._walk(type_param, scope)
         self._bind(scope, node.name)
 
         cscope = self._new_scope("class", scope)

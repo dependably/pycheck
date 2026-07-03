@@ -82,7 +82,31 @@ _NO_FALSE_POSITIVE = {
         'def f(x: "Decimal"):\n    return x\n'
     ),
     "star_import": "from os.path import *\nprint(join('a', 'b'))\n",
+    # Regressions found by the fable adversarial review:
+    "annotation_only_class_field": "import uuid\nclass Row:\n    uuid: str\n    default_id = uuid.uuid4().hex\n",
+    "class_body_order_fallthrough": 'import json\nclass C:\n    data = json.loads("{}")\n    json = "attr"\n',
+    "class_default_pre_shadow": 'import os\nclass C:\n    def m(self, x=os.sep):\n        return x\n    os = "attr"\n',
+    "cast_string_forward_ref": (
+        "from typing import cast\nfrom decimal import Decimal\n" 'def f(x):\n    return cast("Decimal", x)\n'
+    ),
+    "walrus_in_comprehension": "import os\nr = [os and (os := i) for i in [1, 2]]\n",
 }
+
+
+# PEP 695 generic syntax (`def f[T: Bound]`) only parses on Python 3.12+.
+_PEP695_NO_FALSE_POSITIVE = {
+    "pep695_function_bound": "from typing import Sequence\ndef f[T: Sequence](x):\n    return x\n",
+    "pep695_class_bound": "from collections.abc import Iterable\nclass C[T: Iterable]:\n    pass\n",
+}
+
+
+_PEP695_IDS = list(_PEP695_NO_FALSE_POSITIVE)
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="PEP 695 generic syntax needs 3.12+")
+@pytest.mark.parametrize("code", list(_PEP695_NO_FALSE_POSITIVE.values()), ids=_PEP695_IDS)
+def test_no_false_positive_pep695(code):
+    assert _unused_names(code) == []
 
 
 @pytest.mark.parametrize("code", list(_NO_FALSE_POSITIVE.values()), ids=list(_NO_FALSE_POSITIVE))
