@@ -93,6 +93,22 @@ _NO_FALSE_POSITIVE = {
     "cast_keyword_forward_ref": (
         "from typing import cast\nfrom decimal import Decimal\n" 'def f(x):\n    return cast(typ="Decimal", val=x)\n'
     ),
+    # Aliased `cast` import: the forward-ref string still protects its backing
+    # import (the func is Name `c`, not `cast`).
+    "cast_aliased_forward_ref": (
+        "from typing import cast as c\nfrom decimal import Decimal\n" 'def f(x):\n    return c("Decimal", x)\n'
+    ),
+    "cast_aliased_keyword_forward_ref": (
+        "from typing import cast as c\nfrom decimal import Decimal\n" 'def f(x):\n    return c(typ="Decimal", val=x)\n'
+    ),
+    "cast_typing_extensions_aliased": (
+        "from typing_extensions import cast as c\nfrom decimal import Decimal\n"
+        'def f(x):\n    return c("Decimal", x)\n'
+    ),
+    # Module alias attribute form is unchanged, but pin it too.
+    "cast_module_alias_attr": (
+        "import typing as t\nfrom decimal import Decimal\n" 'def f(x):\n    return t.cast("Decimal", x)\n'
+    ),
 }
 
 
