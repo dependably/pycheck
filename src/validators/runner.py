@@ -15,7 +15,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from .config import resolve_allowed_hosts
+from .config import load_config, resolve_config_gate
+from .exceptions import apply_exceptions
 from .pip_conf_validator import validate_pip_conf
 from .pyproject_validator import validate_pyproject
 from .requirements_validator import extract_includes, validate_requirements
@@ -179,9 +180,9 @@ def run_validators(
     """Validate every discovered artifact and print a report. Returns exit code.
 
     ``allowed_hosts`` -- explicit trusted registry hosts to pass to the index
-    validators. When ``None`` they are resolved from the shared
-    ``.dependably-check`` config (an explicit ``config_path``, else discovery by
-    walking up from ``target``).
+    validators. When ``None`` they are resolved from the shared ``.dependably``
+    config (an explicit ``config_path``, else discovery by walking up from
+    ``target``), along with the suppression exceptions and the file ``failOn`` gate.
 
     ``output_format`` -- ``"human"`` (default) prints the text report to stdout;
     ``"json"`` emits a single machine-readable JSON document to stdout (kept
@@ -193,8 +194,16 @@ def run_validators(
     """
     target = Path(target)
     json_mode = output_format == "json"
+
+    # Load the shared .dependably config once: the registry allowlist, the
+    # suppression exceptions, and the file's failOn gate all come from it.
+    config = load_config(target, config_path)
+    _emit_config_warnings(config.get("warnings", []), json_mode)
     if allowed_hosts is None:
-        allowed_hosts = resolve_allowed_hosts(target, config_path)
+        allowed_hosts = config["allowed_registry_hosts"]
+    # CLI --fail-on overrides the file's failOn (spec §4.3).
+    fail_on = resolve_config_gate(config, fail_on)
+
     files = discover_config_files(target, recursive)
 
     if not files:
@@ -204,14 +213,23 @@ def run_validators(
         files, allowed_hosts, json_mode
     )
 
+    # Apply .dependably exceptions: suppressed findings are still reported (with
+    # suppressed:true) but do not gate. Operational findings never suppress.
+    findings, suppressed_error_count, suppressed_count = _apply_exceptions(
+        findings, config.get("exceptions", []), json_mode
+    )
+    # A suppressed error no longer gates the run.
+    gating_errors = total_errors - suppressed_error_count
+
     if not json_mode:
+        suffix = f", {suppressed_count} suppressed by .dependably" if suppressed_count else ""
         print(
-            f"\nValidation complete: {len(files)} file(s), {total_errors} error(s), "
-            f"{total_warnings} warning(s), {total_skipped} skipped"
+            f"\nValidation complete: {len(files)} file(s), {gating_errors} error(s), "
+            f"{total_warnings} warning(s), {total_skipped} skipped{suffix}"
         )
 
     exit_code = _resolve_exit_code(
-        target, len(files), total_errors, total_skipped, total_unreadable, findings, json_mode
+        target, len(files), gating_errors, total_skipped, total_unreadable, findings, json_mode
     )
 
     # The unified --fail-on gate is additive: escalate a clean run to a finding
@@ -219,7 +237,7 @@ def run_validators(
     # Operational findings (skipped/unreadable/no-artifacts) are excluded — the
     # gate rates validation findings, not environment limitations.
     if exit_code == 0 and fail_on:
-        gate_findings = [f for f in findings if f.get("code") not in _OPERATIONAL_CODES]
+        gate_findings = [f for f in findings if f.get("code") not in _OPERATIONAL_CODES and not f.get("suppressed")]
         if gate_trips(gate_findings, list(fail_on)):
             exit_code = 1
 
@@ -227,6 +245,92 @@ def run_validators(
         emit_json(build_json_report(target, len(files), findings, "config", exit_code))
 
     return exit_code
+
+
+def _emit_config_warnings(warnings: Sequence[Any], json_mode: bool) -> None:
+    """Print .dependably deprecation / unknown-key warnings to stderr (spec §2.7).
+
+    Warnings never affect exit codes or the JSON payload; they go to stderr in
+    both human and json modes so the machine-readable stdout stays clean.
+    """
+    for warning in warnings:
+        print(f"warning: {warning.message}", file=sys.stderr)
+
+
+def _finding_match_shape(finding: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize a validator finding into the exception-matcher shape.
+
+    Config findings carry ``code`` (the rule id / finding code) and ``file``;
+    they have no package. The matcher reads ``ruleId``/``rule``, ``id``,
+    ``path`` and (for other tools) ``package``.
+    """
+    return {
+        "ruleId": finding.get("code"),
+        "id": finding.get("code"),
+        "path": finding.get("file"),
+        "package": None,
+        "version": None,
+    }
+
+
+def _apply_exceptions(
+    findings: List[Dict[str, Any]],
+    exceptions: Sequence[Dict[str, Any]],
+    json_mode: bool,
+) -> Tuple[List[Dict[str, Any]], int, int]:
+    """Suppress findings matched by a live ``.dependably`` exception.
+
+    Operational findings (skipped/unreadable/no-artifacts) never suppress -- they
+    describe an environment limitation, not a validation result. Returns
+    ``(findings_for_report, suppressed_error_count, suppressed_count)``. Suppressed
+    findings are kept in the report list carrying ``suppressed: True`` (spec §6.3);
+    unused / expired exceptions are reported to stderr (spec §6.4, §6.5).
+    """
+    if not exceptions:
+        return findings, 0, 0
+
+    # Attach the exception-matcher shape to each gateable finding so
+    # apply_exceptions can match while we keep the original full-field dict.
+    # Operational findings (skipped/unreadable/no-artifacts) never suppress.
+    tagged: List[Dict[str, Any]] = []
+    operational: List[Dict[str, Any]] = []
+    for finding in findings:
+        if finding.get("code") in _OPERATIONAL_CODES:
+            operational.append(finding)
+        else:
+            shape = _finding_match_shape(finding)
+            shape["_original"] = finding
+            tagged.append(shape)
+
+    result = apply_exceptions(tagged, exceptions)
+    _report_exception_health(result, json_mode)
+
+    report: List[Dict[str, Any]] = list(operational)
+    suppressed_error_count = 0
+    for shape in result["active"]:
+        report.append(shape["_original"])
+    for shape in result["suppressed"]:
+        original = shape["_original"]
+        if original.get("severity") == "error":
+            suppressed_error_count += 1
+        report.append({**original, "suppressed": True, "suppressedBy": shape["suppressedBy"]})
+
+    return report, suppressed_error_count, len(result["suppressed"])
+
+
+def _report_exception_health(result: Dict[str, List[Dict[str, Any]]], json_mode: bool) -> None:
+    """Warn to stderr about exceptions that matched nothing or have expired."""
+    for ex in result["unused_exceptions"]:
+        print(
+            f"warning: unused exception for rule \"{ex['rule']}\" " f"(matched no finding in this run): {ex['reason']}",
+            file=sys.stderr,
+        )
+    for ex in result["expired_exceptions"]:
+        print(
+            f"warning: expired exception for rule \"{ex['rule']}\" "
+            f"(expires {ex['expires']}; no longer suppresses): {ex['reason']}",
+            file=sys.stderr,
+        )
 
 
 def _report_no_artifacts(target: Path, json_mode: bool) -> int:

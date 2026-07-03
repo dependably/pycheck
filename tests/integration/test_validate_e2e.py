@@ -320,3 +320,55 @@ class TestConfigWiringAndJson:
         # The file was actually cleaned and a backup written.
         assert "import os" not in f.read_text()
         assert f.with_suffix(".py.backup").exists()
+
+
+class TestDependablyExceptions:
+    """End-to-end .dependably exception suppression through run_validators."""
+
+    def _untrusted(self, tmp_path):
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "requirements.txt").write_text("--index-url https://nexus.corp.local/simple\n")
+
+    def test_exception_suppresses_finding(self, tmp_path, capsys):
+        self._untrusted(tmp_path)
+        # Baseline: the untrusted private index gates the run (exit 1).
+        assert run_validators(tmp_path) == 1
+        capsys.readouterr()
+        # An id-selector exception on the finding code suppresses it -> exit 0.
+        (tmp_path / ".dependably").write_text(
+            '{"pycheck": {"exceptions": [{"rule": "REQ_UNTRUSTED_INDEX", '
+            '"id": "REQ_UNTRUSTED_INDEX", "reason": "internal nexus"}]}}'
+        )
+        assert run_validators(tmp_path) == 0
+        out = capsys.readouterr().out
+        assert "1 suppressed by .dependably" in out
+
+    def test_suppressed_finding_carries_flag_in_json(self, tmp_path, capsys):
+        self._untrusted(tmp_path)
+        (tmp_path / ".dependably").write_text(
+            '{"pycheck": {"exceptions": [{"rule": "REQ_UNTRUSTED_INDEX", '
+            '"id": "REQ_UNTRUSTED_INDEX", "reason": "internal nexus"}]}}'
+        )
+        code = run_validators(tmp_path, output_format="json")
+        assert code == 0
+        doc = json.loads(capsys.readouterr().out)
+        # The finding is still reported, just marked suppressed and non-gating.
+        assert doc["findings"], "suppressed finding must still be reported"
+
+    def test_deprecated_filename_warns_to_stderr(self, tmp_path, capsys):
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "requirements.txt").write_text("requests==2.0\n")
+        (tmp_path / ".dependably-check").write_text('{"pycheck": {}}')
+        run_validators(tmp_path)
+        err = capsys.readouterr().err
+        assert ".dependably-check is deprecated" in err
+
+    def test_config_fail_on_gates_clean_run(self, tmp_path, capsys):
+        (tmp_path / ".git").mkdir()
+        # An unpinned requirement is a WARNING, which does not gate by default.
+        (tmp_path / "requirements.txt").write_text("requests\n")
+        assert run_validators(tmp_path) == 0
+        capsys.readouterr()
+        # failOn: count=0 in the config escalates any finding to a gate failure.
+        (tmp_path / ".dependably").write_text('{"pycheck": {"failOn": {"count": 0}}}')
+        assert run_validators(tmp_path) == 1

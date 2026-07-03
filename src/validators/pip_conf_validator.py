@@ -187,7 +187,7 @@ def _check_index_url(url: str, key: str, line: Optional[int], r: ValidationResul
         if host not in trusted:
             r.add_error(
                 f"{key} host {host!r} is not a public index and is not allowlisted "
-                f"(add it to .dependably-check allowedRegistryHosts)",
+                f"(add it to .dependably allowedRegistryHosts)",
                 "PIP_UNTRUSTED_INDEX",
                 line,
             )

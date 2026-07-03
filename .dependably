@@ -1,4 +1,4 @@
 {
   "common": { "allowedRegistryHosts": ["dependably.northwardlabs.ca"] },
-  "python": { "allowedRegistryHosts": [] }
+  "pycheck": { "allowedRegistryHosts": [] }
 }
