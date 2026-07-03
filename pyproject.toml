@@ -46,9 +46,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/dependably/python-check"
-"Bug Reports" = "https://github.com/dependably/python-check/issues"
-"Source" = "https://github.com/dependably/python-check"
+Homepage = "https://github.com/dependably/pycheck"
+"Bug Reports" = "https://github.com/dependably/pycheck/issues"
+"Source" = "https://github.com/dependably/pycheck"
 
 [project.scripts]
 python-import-checker = "src.checker:main"

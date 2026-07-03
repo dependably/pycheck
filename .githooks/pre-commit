@@ -1,5 +1,5 @@
 #!/bin/sh
-# Pre-commit hook for checker-python.
+# Pre-commit hook for pycheck.
 #
 # Dogfoods the tool on this repo (unused-import --check + config --validate),
 # then runs the code-quality gates on the *staged* Python files. Install with:

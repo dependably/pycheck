@@ -6,8 +6,8 @@
 
 ```bash
 # Clone the repository
-git clone https://gitlab.northwardlabs.ca/dependably/python-check.git
-cd python-check
+git clone https://gitlab.northwardlabs.ca/dependably/pycheck.git
+cd pycheck
 
 # Create a virtual environment (recommended)
 python -m venv .venv
