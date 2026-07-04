@@ -16,7 +16,7 @@ import tokenize
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-__version__ = "1.2.1"
+__version__ = "1.2.3"
 
 # Process exit codes, aligned with the Dependably suite convention:
 #   0 clean · 1 findings (block) · 2 usage error / operational-internal error.
@@ -1932,7 +1932,7 @@ Examples:
             "side effect."
         ),
     )
-    parser.add_argument("--version", action="version", version=f"python-import-checker {__version__}")
+    parser.add_argument("--version", action="version", version=f"pycheck {__version__}")
 
     return parser
 

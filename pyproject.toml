@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "Dependably.pycheck"
-version = "1.2.2"
+version = "1.2.3"
 description = "A tool to analyze Python files for unused imports and optionally clean them up"
 readme = "readme.md"
 requires-python = ">=3.9"
@@ -51,6 +51,9 @@ Homepage = "https://github.com/dependably/pycheck"
 "Source" = "https://github.com/dependably/pycheck"
 
 [project.scripts]
+# `pycheck` is the canonical command (matches the package/repo name); the
+# import-checker names are kept as backward-compatible aliases.
+pycheck = "src.checker:main"
 python-import-checker = "src.checker:main"
 import-checker = "src.checker:main"
 
