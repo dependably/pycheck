@@ -99,7 +99,7 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip build
       - run: python -m build
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: dist
           path: dist/*
@@ -123,7 +123,7 @@ jobs:
       - run: python -m venv /tmp/sbom-venv && /tmp/sbom-venv/bin/pip install --upgrade pip && /tmp/sbom-venv/bin/pip install .
       - run: pip install cyclonedx-bom
       - run: cyclonedx-py environment /tmp/sbom-venv --output-format JSON --output-file sbom.json --spec-version 1.6
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: sbom
           path: sbom.json

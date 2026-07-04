@@ -36,9 +36,16 @@ MULTILINE_BULK_IMPORT = """from ancestry_mcp.tools import (
 """
 
 
+requires_per_alias_lineno = pytest.mark.skipif(
+    sys.version_info < (3, 10),
+    reason="ast.alias only carries its own lineno on 3.10+; 3.9 falls back " "to the statement line",
+)
+
+
 class TestRealPerNameLineNumbers:
     """HIGH #1: each unused name is reported at its own real line."""
 
+    @requires_per_alias_lineno
     def test_json_location_line_is_the_names_own_line(self, tmp_path, capsys):
         f = tmp_path / "x.py"
         f.write_text(MULTILINE_BULK_IMPORT)
@@ -54,6 +61,7 @@ class TestRealPerNameLineNumbers:
         # None of the 3 findings are (wrongly) attributed to the opening line.
         assert 1 not in by_line
 
+    @requires_per_alias_lineno
     def test_human_report_uses_real_line_not_opening_line(self, tmp_path, capsys):
         f = tmp_path / "x.py"
         f.write_text(MULTILINE_BULK_IMPORT)

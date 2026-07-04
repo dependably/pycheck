@@ -16,7 +16,7 @@ import tokenize
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-__version__ = "1.2.3"
+__version__ = "1.2.4"
 
 # Process exit codes, aligned with the Dependably suite convention:
 #   0 clean · 1 findings (block) · 2 usage error / operational-internal error.

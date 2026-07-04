@@ -4,6 +4,8 @@ import ast
 import sys
 import os
 
+import pytest
+
 # Add src directory to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
@@ -257,6 +259,10 @@ from collections import (
             assert imp.is_from_import is True
             assert imp.line_number == 2  # Line where 'from' statement starts
 
+    @pytest.mark.skipif(
+        sys.version_info < (3, 10),
+        reason="ast.alias only carries its own lineno on 3.10+; 3.9 falls back " "to the statement line",
+    )
     def test_extract_multiline_from_import_name_line_matches_real_line(self):
         """moonlitlabs/pycheck#26: each name's ``name_line`` is its own physical
         line, not the statement's opening line (``line_number`` stays the

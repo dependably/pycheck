@@ -12,7 +12,7 @@ from .validators import (
     run_validators,
 )
 
-__version__ = "1.2.3"
+__version__ = "1.2.4"
 __all__ = [
     "ImportChecker",
     "ImportCheckerError",
