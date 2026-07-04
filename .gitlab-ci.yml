@@ -300,9 +300,17 @@ publish:
     # append the upload path here (trimming any trailing slash to avoid //).
     - UPLOAD_URL="${REGISTRY_URL%/}/pypi/legacy/"
     - python -m pip install --upgrade twine
-    - echo "Uploading $(ls dist/) to $UPLOAD_URL"
+    # Upload ONLY the wheel. The Dependably registry keeps a single artifact slot
+    # per (package, version): it registers the first-uploaded filename but
+    # overwrites the stored blob on every subsequent upload for that version.
+    # Uploading `dist/*` sent the wheel first (alphabetically) then the sdist, so
+    # the `.whl` URL ended up serving the sdist's gzip bytes — pip then rejected
+    # the download with "Wheel is invalid" (it's a tarball, not a zip). The wheel
+    # is a pure-Python `py3-none-any` universal wheel, so it's sufficient on its
+    # own for every pip consumer; publishing just it keeps name and content in sync.
+    - echo "Uploading $(ls dist/*.whl) to $UPLOAD_URL"
     - TWINE_USERNAME="${REGISTRY_USER:-__token__}" TWINE_PASSWORD="$REGISTRY_KEY"
-      twine upload --non-interactive --repository-url "$UPLOAD_URL" dist/*
+      twine upload --non-interactive --repository-url "$UPLOAD_URL" dist/*.whl
 
 # Mirror the source to the public GitHub repo (dependably/pycheck). It sits
 # in the final `publish` stage with no `needs:`, so GitLab only makes it
