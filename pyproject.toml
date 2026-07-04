@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "Dependably.pycheck"
-version = "1.2.1"
+version = "1.2.2"
 description = "A tool to analyze Python files for unused imports and optionally clean them up"
 readme = "readme.md"
 requires-python = ">=3.9"
