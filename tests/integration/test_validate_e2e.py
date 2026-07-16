@@ -232,11 +232,19 @@ class TestRecursionAndExitCodes:
         (tmp_path / "requirements-ok.txt").write_text("requests==2.0\n")
         assert self._run(tmp_path) == 1
 
-    def test_unpinned_warning_does_not_trip_operational_gate(self, tmp_path):
-        # A clean warning-only run with a severity=low gate trips (that is the
-        # documented additive behavior); but an operational skip must not.
-        (tmp_path / "requirements.txt").write_text("requests>=2.0\n")  # unpinned warning
+    def test_warning_only_run_trips_severity_low_gate(self, tmp_path):
+        # A warning-only run passes by default but a severity=low gate trips it
+        # (the documented additive behavior); an operational skip must not.
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "requirements.txt").write_text("requests==2.0\n--index-url http://pypi.org/simple\n")
+        assert self._run(tmp_path) == 0  # insecure-index warning alone passes
         assert self._run(tmp_path, fail_on=[("severity", "low")]) == 1
+
+    def test_unpinned_dependency_errors_by_default(self, tmp_path):
+        # pinned-versions is error by default: no gate flags needed for exit 1.
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "requirements.txt").write_text("requests>=2.0\n")
+        assert self._run(tmp_path) == 1
 
 
 class TestRequirementIncludes:
@@ -365,10 +373,75 @@ class TestDependablyExceptions:
 
     def test_config_fail_on_gates_clean_run(self, tmp_path, capsys):
         (tmp_path / ".git").mkdir()
-        # An unpinned requirement is a WARNING, which does not gate by default.
-        (tmp_path / "requirements.txt").write_text("requests\n")
+        # An insecure http index is a WARNING, which does not gate by default.
+        (tmp_path / "requirements.txt").write_text("requests==2.0\n--index-url http://pypi.org/simple\n")
         assert run_validators(tmp_path) == 0
         capsys.readouterr()
         # failOn: count=0 in the config escalates any finding to a gate failure.
         (tmp_path / ".dependably").write_text('{"pycheck": {"failOn": {"count": 0}}}')
+        assert run_validators(tmp_path) == 1
+
+
+class TestPinnedVersionsRule:
+    """End-to-end pinned-versions parity: error by default, .dependably/--rule
+    overrides (spec §4.1), off drops the finding entirely."""
+
+    def _unpinned(self, tmp_path):
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "requirements.txt").write_text("requests>=2.0\n")
+
+    def test_default_exits_one(self, tmp_path):
+        self._unpinned(tmp_path)
+        assert run_validators(tmp_path) == 1
+
+    def test_config_warn_override_passes(self, tmp_path, capsys):
+        self._unpinned(tmp_path)
+        (tmp_path / ".dependably").write_text('{"pycheck": {"rules": {"pinned-versions": "warn"}}}')
+        assert run_validators(tmp_path) == 0
+        assert "REQ_UNPINNED" in capsys.readouterr().out  # still reported, as a warning
+
+    def test_common_section_rules_honoured(self, tmp_path):
+        self._unpinned(tmp_path)
+        (tmp_path / ".dependably").write_text('{"common": {"rules": {"pinned-versions": "warn"}}}')
+        assert run_validators(tmp_path) == 0
+
+    def test_config_off_drops_finding(self, tmp_path, capsys):
+        self._unpinned(tmp_path)
+        (tmp_path / ".dependably").write_text('{"pycheck": {"rules": {"pinned-versions": "off"}}}')
+        assert run_validators(tmp_path, output_format="json") == 0
+        doc = json.loads(capsys.readouterr().out)
+        assert all(f["ruleId"] != "REQ_UNPINNED" for f in doc["findings"])
+
+    def test_cli_rule_override_beats_config(self, tmp_path):
+        self._unpinned(tmp_path)
+        (tmp_path / ".dependably").write_text('{"pycheck": {"rules": {"pinned-versions": "error"}}}')
+        assert run_validators(tmp_path, rule_overrides={"pinned-versions": "warn"}) == 0
+
+    def test_cli_rule_flag_via_main(self, tmp_path):
+        self._unpinned(tmp_path)
+        with patch.object(sys, "argv", ["checker.py", "--validate", str(tmp_path), "--rule", "pinned-versions:warn"]):
+            assert main() == 0
+
+    def test_bad_rule_flag_is_usage_error(self, tmp_path, capsys):
+        self._unpinned(tmp_path)
+        for bad in ("bogus:error", "pinned-versions:fatal", "pinned-versions"):
+            with patch.object(sys, "argv", ["checker.py", "--validate", str(tmp_path), "--rule", bad]):
+                with pytest.raises(SystemExit) as exc:
+                    main()
+            assert exc.value.code == 2
+
+    def test_pyproject_unpinned_gates_too(self, tmp_path):
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "x"\nversion = "1.0.0"\nlicense = "MIT"\ndependencies = ["numpy>=1.0"]\n'
+        )
+        assert run_validators(tmp_path) == 1
+        (tmp_path / ".dependably").write_text('{"pycheck": {"rules": {"pinned-versions": "off"}}}')
+        assert run_validators(tmp_path) == 0
+
+    def test_security_codes_not_downgradable(self, tmp_path):
+        # valid-requirements: off must NOT silence a plaintext credential.
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "requirements.txt").write_text("--index-url https://user:secret@pypi.example.com/simple\n")
+        (tmp_path / ".dependably").write_text('{"pycheck": {"rules": {"valid-requirements": "off"}}}')
         assert run_validators(tmp_path) == 1

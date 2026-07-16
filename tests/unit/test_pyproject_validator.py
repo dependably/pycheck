@@ -19,7 +19,7 @@ name = "sample-project"
 version = "1.2.3"
 license = "MIT"
 requires-python = ">=3.9"
-dependencies = ["requests==2.31.0", "click>=8.0"]
+dependencies = ["requests==2.31.0", "click==8.1.7"]
 
 [project.optional-dependencies]
 dev = ["pytest==7.4.0"]
@@ -84,6 +84,53 @@ class TestInvalidPyproject:
     def test_parse_error(self):
         r = validate_pyproject("this is not = valid toml [[[")
         assert "PP_PARSE" in _codes(r)
+
+
+class TestPinnedVersions:
+    """The cross-tool pinned-versions rule: unpinned ranges error by default."""
+
+    def test_unpinned_dependency_errors(self):
+        r = validate_pyproject('[project]\nname="ok"\nversion="1.0.0"\nlicense="MIT"\ndependencies=["numpy>=1.0"]\n')
+        assert "PP_UNPINNED" in _codes(r)
+        assert r.valid is False
+
+    def test_bare_name_dependency_errors(self):
+        r = validate_pyproject('[project]\nname="ok"\nversion="1.0.0"\nlicense="MIT"\ndependencies=["numpy"]\n')
+        assert "PP_UNPINNED" in _codes(r)
+
+    def test_unpinned_optional_group_errors(self):
+        r = validate_pyproject(
+            '[project]\nname="ok"\nversion="1.0.0"\nlicense="MIT"\n'
+            '[project.optional-dependencies]\ndev = ["pytest>=6.0"]\n'
+        )
+        assert "PP_UNPINNED" in _codes(r)
+
+    def test_exact_pins_clean(self):
+        r = validate_pyproject(
+            '[project]\nname="ok"\nversion="1.0.0"\nlicense="MIT"\n' 'dependencies=["numpy==1.26.0", "legacy===1.0"]\n'
+        )
+        assert "PP_UNPINNED" not in _codes(r)
+
+    def test_marker_pin_counts(self):
+        r = validate_pyproject(
+            '[project]\nname="ok"\nversion="1.0.0"\nlicense="MIT"\n'
+            "dependencies=[\"tomli==2.0.1; python_version < '3.11'\"]\n"
+        )
+        assert "PP_UNPINNED" not in _codes(r)
+
+    def test_direct_url_dependency_counts_as_pinned(self):
+        r = validate_pyproject(
+            '[project]\nname="ok"\nversion="1.0.0"\nlicense="MIT"\n'
+            'dependencies=["foo @ https://example.com/foo-1.0.whl"]\n'
+        )
+        assert "PP_UNPINNED" not in _codes(r)
+
+    def test_build_system_requires_stays_loose(self):
+        # [build-system].requires is loose by design -- never pin-checked.
+        r = validate_pyproject(
+            '[build-system]\nrequires = ["setuptools>=45"]\n' '[project]\nname="ok"\nversion="1.0.0"\nlicense="MIT"\n'
+        )
+        assert "PP_UNPINNED" not in _codes(r)
 
 
 class TestWarnings:

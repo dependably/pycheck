@@ -16,7 +16,7 @@ from __future__ import annotations
 import sys
 from typing import Any, Dict, Union
 
-from ._pep508 import is_valid_name, is_valid_pep508, is_valid_requires_python, is_valid_version
+from ._pep508 import is_pinned_spec, is_valid_name, is_valid_pep508, is_valid_requires_python, is_valid_version
 from .result import ValidationResult
 
 if sys.version_info >= (3, 11):
@@ -155,11 +155,23 @@ def _validate_metadata(project: Dict[str, Any], r: ValidationResult) -> None:
 
 
 def _validate_dep_list(deps: list, section: str, r: ValidationResult) -> None:
+    """Validate ``[project]`` dependency entries (PEP 508 + exact pinning).
+
+    Unpinned ranges are errors by default (cross-tool ``pinned-versions``
+    rule). Only the install surface is pin-checked -- ``[build-system].requires``
+    goes through :func:`_validate_build_requires` and stays loose by design.
+    """
     for entry in deps:
         if not isinstance(entry, str):
             r.add_error(f"{section} entry is not a string: {entry!r}", "PP_DEP_NOT_STRING")
         elif not is_valid_pep508(entry):
             r.add_error(f"invalid PEP 508 specifier in {section}: {entry!r}", "PP_INVALID_DEP")
+        elif not is_pinned_spec(entry):
+            r.add_error(
+                f"unpinned dependency in {section}: {entry!r} (no == pin) -- pin the version, "
+                'or set pycheck.rules["pinned-versions"] to "warn"/"off" in .dependably',
+                "PP_UNPINNED",
+            )
 
 
 def _validate_build_system(build_system: Any, r: ValidationResult) -> None:

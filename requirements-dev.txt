@@ -1,8 +1,15 @@
-# Development dependencies for Python Library Checker
-pytest>=6.0.0
-black>=22.0.0
-flake8>=4.0.0
-mypy>=0.900
-setuptools>=45
-wheel
-build
+# Development dependencies for Python Library Checker.
+# Exact-pinned: pycheck's own pinned-versions rule gates this file (dogfooding).
+# Marker-split pins keep Python 3.9 installable (pytest 9 / black 26 / mypy 2 /
+# build 1.5 all require Python >= 3.10) while newer interpreters get current tools.
+pytest==9.1.1; python_version >= '3.10'
+pytest==8.4.2; python_version < '3.10'
+black==26.5.1; python_version >= '3.10'
+black==25.11.0; python_version < '3.10'
+flake8==7.3.0
+mypy==2.1.0; python_version >= '3.10'
+mypy==1.19.1; python_version < '3.10'
+setuptools==82.0.1
+wheel==0.47.0
+build==1.5.0; python_version >= '3.10'
+build==1.4.4; python_version < '3.10'

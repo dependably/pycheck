@@ -103,8 +103,12 @@ vs. `unused-import`'s `high`) so CI/editor consumers can tell "clear dead code" 
 | `1`  | Findings — unused imports, validation errors, or a tripped `--fail-on` gate. |
 | `2`  | Usage error or an operational/internal error. |
 
-`--validate` exits non-zero only on **errors**; warnings (such as unpinned dependencies)
-are reported but still pass.
+`--validate` exits non-zero only on **errors**; warnings are reported but still pass.
+Unpinned dependencies (no `==` pin in `requirements*.txt` or a `pyproject.toml`
+dependency list) are **errors by default** — the cross-tool `pinned-versions` rule —
+so a default run or pre-commit hook fails until versions are pinned. Relax it per
+repo with `.dependably` (`"rules": { "pinned-versions": "warn" }` or `"off"`) or for
+one run with `--rule pinned-versions:warn`.
 
 ## JSON output
 
@@ -114,7 +118,7 @@ schema, so every tool in the suite parses the same way:
 ```json
 {
   "tool": "Dependably.pycheck",
-  "toolVersion": "1.2.1",
+  "toolVersion": "1.3.0",
   "schemaVersion": "1.0",
   "target": "src",
   "summary": {
@@ -159,7 +163,21 @@ top-level sections are ignored.
 `.dependably` is the shared, cross-tool config for the whole Dependably suite. Alongside
 the registry allowlist, pycheck reads its own section (`pycheck`) plus `common` for:
 
-- `rules` — per-rule severity (`error` / `warn` / `off`).
+- `rules` — per-rule severity (`error` / `warn` / `off`). `error` gates the run (exit 1),
+  `warn` reports without gating, and `off` drops the rule's findings entirely (unlike an
+  exception, which keeps the finding visible). The CLI `--rule ID:SEVERITY` flag
+  (repeatable) overrides the file per rule for one run. Security findings (plaintext
+  credentials, `--trusted-host`, untrusted indexes) are always hard errors and cannot be
+  downgraded. Rule ids (`rules` speaks rule ids; `exceptions` match finding codes):
+
+  | Rule id | Default | Applies to |
+  | ------- | ------- | ---------- |
+  | `pinned-versions` | error | Unpinned deps in `requirements*.txt` and `pyproject.toml` `[project]` dependency lists (`REQ_UNPINNED`, `PP_UNPINNED`) |
+  | `valid-requirements` | per finding | All other `REQ_*` findings |
+  | `valid-pyproject` | per finding | All other `PP_*` findings |
+  | `valid-pip-conf` | per finding | All other `PIP_*` findings |
+  | `unused-import`, `possible-intentional-import` | — | Lint rules (`--check`); not yet severity-configurable |
+
 - `failOn` — the file form of the `--fail-on` CI gate (`{ "severity": ..., "count": ... }`).
   A CLI `--fail-on` overrides it.
 - `exceptions` — targeted suppression of specific findings without disabling a rule or
