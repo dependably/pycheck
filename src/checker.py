@@ -16,7 +16,7 @@ import tokenize
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-__version__ = "1.2.4"
+__version__ = "1.3.0"
 
 # Process exit codes, aligned with the Dependably suite convention:
 #   0 clean · 1 findings (block) · 2 usage error / operational-internal error.
@@ -88,6 +88,37 @@ def _validate_fail_on_rule(key: str, value: str) -> None:
             raise ValueError(f"invalid --fail-on count '{value}': expected a non-negative integer")
     else:
         raise ValueError(f"invalid --fail-on key '{key}': expected 'severity' or 'count'")
+
+
+def parse_rule_overrides(specs: List[str]) -> Dict[str, str]:
+    """Validate the repeatable ``--rule ID:SEVERITY`` overrides.
+
+    Overrides a rule's configured severity for this run (CLI beats the
+    ``.dependably`` ``rules`` map, spec §4.1). Returns ``{rule_id: severity}``.
+    Raises ``ValueError`` (with a usage-style message) on a malformed spec, an
+    unknown rule id, or a severity outside error/warn/off so the caller can
+    surface it as an argparse error (exit 2).
+    """
+    # Lazy import: validators.config imports from checker, so a module-level
+    # import here would be circular (same shim pattern as _run_validate).
+    try:
+        from validators.config import KNOWN_RULES, SEVERITIES
+    except ImportError:  # pragma: no cover - import shim
+        from .validators.config import KNOWN_RULES, SEVERITIES
+
+    overrides: Dict[str, str] = {}
+    for spec in specs:
+        if ":" not in spec:
+            raise ValueError(f"invalid --rule value '{spec}': expected ID:SEVERITY")
+        rule_id, _, severity = spec.partition(":")
+        rule_id = rule_id.strip()
+        severity = severity.strip().lower()
+        if rule_id not in KNOWN_RULES:
+            raise ValueError(f"invalid --rule id '{rule_id}': known rules: {', '.join(KNOWN_RULES)}")
+        if severity not in SEVERITIES:
+            raise ValueError(f"invalid --rule severity '{severity}': choose from {', '.join(SEVERITIES)}")
+        overrides[rule_id] = severity
+    return overrides
 
 
 def gate_trips(raw_findings: List[Dict[str, Any]], rules: List[Tuple[str, str]]) -> bool:
@@ -1921,6 +1952,18 @@ Examples:
         ),
     )
     parser.add_argument(
+        "--rule",
+        action="append",
+        metavar="ID:SEVERITY",
+        default=None,
+        help=(
+            "Override a rule's severity for this run (repeatable), e.g. "
+            "--rule pinned-versions:warn. SEVERITY is error, warn, or off; "
+            "takes precedence over the .dependably rules map. Applies in "
+            "--validate mode (inert in --check/--cleanup)."
+        ),
+    )
+    parser.add_argument(
         "--remove-possible-reexports",
         action="store_true",
         help=(
@@ -1944,6 +1987,7 @@ def _run_validate(
     output_format: str = "human",
     fail_on: Optional[List[Tuple[str, str]]] = None,
     recursive: bool = True,
+    rule_overrides: Optional[Dict[str, str]] = None,
 ) -> int:
     """Dispatch --validate to the validators package (lazy import)."""
     try:
@@ -1955,7 +1999,12 @@ def _run_validate(
         stream = sys.stderr if output_format == "json" else sys.stdout
         print(f"Validating config artifacts under: {target}", file=stream)
     exit_code: int = run_validators(
-        target, recursive=recursive, config_path=config, output_format=output_format, fail_on=fail_on
+        target,
+        recursive=recursive,
+        config_path=config,
+        output_format=output_format,
+        fail_on=fail_on,
+        rule_overrides=rule_overrides,
     )
     return exit_code
 
@@ -2014,15 +2063,18 @@ def main() -> int:
         parser = setup_argument_parser()
         args = parser.parse_args()
 
-        # Validate the unified --fail-on gate up front; a bad rule is a usage
-        # error (argparse-style exit 2), not an operational failure.
+        # Validate the unified --fail-on gate and --rule overrides up front; a
+        # bad rule is a usage error (argparse-style exit 2), not operational.
         try:
             fail_on_rules = parse_fail_on(args.fail_on or [])
+            rule_overrides = parse_rule_overrides(args.rule or [])
         except ValueError as exc:
             parser.error(str(exc))
 
         if args.validate:
-            return _run_validate(args.target, args.verbose, args.config, args.format, fail_on_rules, args.recursive)
+            return _run_validate(
+                args.target, args.verbose, args.config, args.format, fail_on_rules, args.recursive, rule_overrides
+            )
         return _run_import_check(args, fail_on_rules)
 
     # Operational / internal errors are NOT findings: per the suite convention

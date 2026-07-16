@@ -23,9 +23,12 @@ class TestRequirements:
         assert r.valid is True
         assert r.warnings == []
 
-    def test_unpinned_warns(self):
+    def test_unpinned_errors_by_default(self):
+        # pinned-versions is error by default (suite parity with npm-check);
+        # a .dependably rules override is what downgrades it, not the validator.
         r = validate_requirements("requests>=2.0\n")
-        assert "REQ_UNPINNED" in _warning_codes(r)
+        assert "REQ_UNPINNED" in _error_codes(r)
+        assert r.valid is False
 
     def test_invalid_line_errors(self):
         r = validate_requirements("this is not valid !!!\n")
@@ -36,20 +39,20 @@ class TestRequirements:
         assert r.valid is True
         assert r.info["requirements"] == 1
 
-    def test_marker_bearing_unpinned_still_warns(self):
+    def test_marker_bearing_unpinned_still_flagged(self):
         # A marker must not exempt a genuinely unpinned dependency.
         r = validate_requirements("typing-extensions; python_version < '3.10'\n")
-        assert "REQ_UNPINNED" in _warning_codes(r)
+        assert "REQ_UNPINNED" in _error_codes(r)
 
     def test_marker_bearing_pinned_not_flagged(self):
-        # The `==` lives in the requirement, so it is pinned -> no warning.
+        # The `==` lives in the requirement, so it is pinned -> no finding.
         r = validate_requirements("typing-extensions==4.0; python_version < '3.10'\n")
-        assert "REQ_UNPINNED" not in _warning_codes(r)
+        assert "REQ_UNPINNED" not in _error_codes(r)
 
     def test_marker_internal_equals_not_treated_as_pin(self):
         # `==` inside the marker must NOT count as a version pin.
         r = validate_requirements("typing-extensions; python_version == '3.9'\n")
-        assert "REQ_UNPINNED" in _warning_codes(r)
+        assert "REQ_UNPINNED" in _error_codes(r)
 
 
 class TestSecurity:

@@ -33,6 +33,9 @@ PEP440_RE = re.compile(
 # A single version-specifier clause, e.g. ``>=1.2``, ``==1.0.*``, ``~=2.3``.
 _SPEC_CLAUSE_RE = re.compile(r"^(===|==|!=|~=|>=|<=|>|<)\s*[A-Za-z0-9][\w.*+!-]*$")
 
+# Pinned to an exact version (``==`` or ``===``).
+_PINNED_RE = re.compile(r"(===|==)")
+
 # Leading name (with optional extras) of a PEP 508 requirement string. The name
 # may not start or end with a separator (matching :data:`NAME_RE`).
 _REQ_HEAD_RE = re.compile(
@@ -59,6 +62,21 @@ def is_valid_requires_python(value: object) -> bool:
         if not _SPEC_CLAUSE_RE.match(clause.strip()):
             return False
     return True
+
+
+def is_pinned_spec(spec: str) -> bool:
+    """Return True when a requirement spec pins an exact version.
+
+    Detects an ``==`` / ``===`` clause on the marker-free portion (a ``==``
+    inside an environment marker after ``;`` is not a pin). Direct-URL
+    references (``name @ url``) identify one exact artifact and count as
+    pinned. Shared by the requirements and pyproject validators so both speak
+    the same ``pinned-versions`` rule.
+    """
+    if "@" in spec:
+        return True
+    marker_free = spec.split(";", 1)[0]
+    return bool(_PINNED_RE.search(marker_free))
 
 
 def is_valid_pep508(requirement: object) -> bool:

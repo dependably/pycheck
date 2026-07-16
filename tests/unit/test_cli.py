@@ -16,6 +16,7 @@ from checker import (
     main,
     ImportCheckerError,
     parse_fail_on,
+    parse_rule_overrides,
     gate_trips,
 )
 
@@ -262,7 +263,7 @@ class TestMainFunction:
 
         assert result == 0
         mock_run_validators.assert_called_once_with(
-            tmp_path, recursive=True, config_path=None, output_format="human", fail_on=[]
+            tmp_path, recursive=True, config_path=None, output_format="human", fail_on=[], rule_overrides={}
         )
 
     @patch("validators.runner.run_validators")
@@ -287,7 +288,7 @@ class TestMainFunction:
 
         assert result == 0
         mock_run_validators.assert_called_once_with(
-            tmp_path, recursive=True, config_path=cfg, output_format="human", fail_on=[]
+            tmp_path, recursive=True, config_path=cfg, output_format="human", fail_on=[], rule_overrides={}
         )
 
     def test_main_check_exits_nonzero_on_unused(self, tmp_path):
@@ -453,6 +454,37 @@ class TestParseFailOn:
     def test_bad_rule_raises(self, bad):
         with pytest.raises(ValueError):
             parse_fail_on([bad])
+
+
+class TestParseRuleOverrides:
+    """Unit tests for the repeatable --rule ID:SEVERITY override parser."""
+
+    def test_parses_single_override(self):
+        assert parse_rule_overrides(["pinned-versions:warn"]) == {"pinned-versions": "warn"}
+
+    def test_parses_repeated_overrides(self):
+        assert parse_rule_overrides(["pinned-versions:off", "valid-requirements:warn"]) == {
+            "pinned-versions": "off",
+            "valid-requirements": "warn",
+        }
+
+    def test_empty_is_no_overrides(self):
+        assert parse_rule_overrides([]) == {}
+
+    def test_severity_case_insensitive(self):
+        assert parse_rule_overrides(["pinned-versions:WARN"]) == {"pinned-versions": "warn"}
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "pinned-versions",  # no ':'
+            "pinned-versions:fatal",  # not error/warn/off
+            "bogus:error",  # unknown rule id
+        ],
+    )
+    def test_bad_override_raises(self, bad):
+        with pytest.raises(ValueError):
+            parse_rule_overrides([bad])
 
 
 class TestGateTrips:

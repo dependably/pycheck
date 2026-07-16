@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 from validators.config import (  # noqa: E402
+    KNOWN_RULES,
     SharedConfigError,
     load_config,
     resolve_config_gate,
@@ -120,6 +121,16 @@ class TestValidation:
         with pytest.raises(SharedConfigError) as exc:
             load_config(target=tmp_path)
         assert exc.value.code == "INVALID_FAIL_ON"
+
+
+class TestPinnedVersionsRegistry:
+    def test_pinned_versions_is_known_rule(self):
+        assert "pinned-versions" in KNOWN_RULES
+
+    def test_pinned_versions_override_round_trips(self, tmp_path):
+        _write(tmp_path / ".dependably", '{"pycheck": {"rules": {"pinned-versions": "warn"}}}')
+        model = load_config(tmp_path)
+        assert model["rules"]["pinned-versions"] == "warn"
 
 
 class TestMerge:

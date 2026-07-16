@@ -15,12 +15,15 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
-from .config import load_config, resolve_config_gate
+from .config import load_config, resolve_config_gate, rule_for_code, rule_severity
 from .exceptions import apply_exceptions
+from .pip_conf_validator import SECURITY_CODES as _PIP_SECURITY_CODES
 from .pip_conf_validator import validate_pip_conf
+from .pyproject_validator import SECURITY_CODES as _PP_SECURITY_CODES
 from .pyproject_validator import validate_pyproject
+from .requirements_validator import SECURITY_CODES as _REQ_SECURITY_CODES
 from .requirements_validator import extract_includes, validate_requirements
-from .result import ValidationResult
+from .result import ValidationError, ValidationResult, ValidationWarning
 
 # The JSON document is assembled with the shared helpers from ``checker`` so the
 # shape matches the import-checker's json output. Flat layout (tests put ``src/``
@@ -36,6 +39,10 @@ _Validator = Callable[[str], ValidationResult]
 # Finding codes that describe an operational condition (nothing was validated),
 # not a validation finding. They are reported but never feed the --fail-on gate.
 _OPERATIONAL_CODES = frozenset({"skipped-artifact", "unreadable-file", "no-artifacts", "all-skipped"})
+
+# Security findings are ALWAYS errors, regardless of any configured rule
+# severity (suite convention -- mirrors npm-check's .npmrc security codes).
+_SECURITY_CODES = _PIP_SECURITY_CODES | _PP_SECURITY_CODES | _REQ_SECURITY_CODES
 
 # Directories never descended into during a recursive validate walk (vendored /
 # cache / build output). ``.pip`` is intentionally NOT excluded so the
@@ -168,6 +175,43 @@ def _follow_requirement_includes(
     return result
 
 
+def apply_rule_severities(result: ValidationResult, rules: Dict[str, Any]) -> ValidationResult:
+    """Remap a result's finding severities per the merged ``rules`` map (spec §4.1).
+
+    Each finding code resolves to a config-addressable rule id
+    (:func:`rule_for_code`); a configured severity moves the finding between
+    ``errors``/``warnings`` (``error``/``warn``) or drops it entirely (``off`` --
+    unlike an exception, an ``off`` finding is not reported at all).
+    Unconfigured rules keep the validator's native severity, and security codes
+    (:data:`_SECURITY_CODES`) are never remapped -- they stay hard errors. Runs
+    before printing/counting so the exit-code logic, the ``failOn`` gate, and
+    exception matching all see the remapped set.
+    """
+    if not rules or result.info.get("skipped"):
+        return result
+
+    errors: List[ValidationError] = []
+    warnings: List[ValidationWarning] = []
+    for err in result.errors:
+        severity = None if err.code in _SECURITY_CODES else rule_severity(rules, rule_for_code(err.code))
+        if severity == "off":
+            continue
+        if severity == "warn":
+            warnings.append(ValidationWarning(err.code, str(err), err.line))
+        else:
+            errors.append(err)
+    for warn in result.warnings:
+        severity = rule_severity(rules, rule_for_code(warn.code))
+        if severity == "off":
+            continue
+        if severity == "error":
+            errors.append(ValidationError(warn.message, warn.code, warn.line))
+        else:
+            warnings.append(warn)
+
+    return ValidationResult(valid=not errors, errors=errors, warnings=warnings, info=result.info)
+
+
 def run_validators(
     target: Path,
     *,
@@ -176,6 +220,7 @@ def run_validators(
     config_path: Optional[Path] = None,
     output_format: str = "human",
     fail_on: Optional[Sequence[Tuple[str, str]]] = None,
+    rule_overrides: Optional[Dict[str, str]] = None,
 ) -> int:
     """Validate every discovered artifact and print a report. Returns exit code.
 
@@ -191,6 +236,9 @@ def run_validators(
     ``fail_on`` -- the unified ``--fail-on`` gate rules. Additive: validation
     errors already gate (exit 1); these rules can only escalate an otherwise
     clean run to a finding, never relax the default gate.
+
+    ``rule_overrides`` -- per-rule severity overrides from the CLI (``--rule``),
+    layered over the config's merged ``rules`` map (CLI wins, spec §4.1).
     """
     target = Path(target)
     json_mode = output_format == "json"
@@ -203,6 +251,8 @@ def run_validators(
         allowed_hosts = config["allowed_registry_hosts"]
     # CLI --fail-on overrides the file's failOn (spec §4.3).
     fail_on = resolve_config_gate(config, fail_on)
+    # Effective rule severities: CLI --rule overrides the file's rules per id.
+    rules: Dict[str, Any] = {**config.get("rules", {}), **(rule_overrides or {})}
 
     files = discover_config_files(target, recursive)
 
@@ -210,7 +260,7 @@ def run_validators(
         return _report_no_artifacts(target, json_mode)
 
     findings, total_errors, total_warnings, total_skipped, total_unreadable = _collect_results(
-        files, allowed_hosts, json_mode
+        files, allowed_hosts, json_mode, rules
     )
 
     # Apply .dependably exceptions: suppressed findings are still reported (with
@@ -353,8 +403,9 @@ def _collect_results(
     files: List[Tuple[Path, _Validator]],
     allowed_hosts: Sequence[str],
     json_mode: bool,
+    rules: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[Dict[str, Any]], int, int, int, int]:
-    """Validate each artifact.
+    """Validate each artifact, remapping severities per the ``rules`` map.
 
     Returns ``(findings, errors, warnings, skipped, unreadable)``.
     """
@@ -386,7 +437,7 @@ def _collect_results(
             total_unreadable += 1
             continue
 
-        result = _invoke(validator, content, allowed_hosts, path)
+        result = apply_rule_severities(_invoke(validator, content, allowed_hosts, path), rules or {})
         if result.info.get("skipped"):
             total_skipped += 1
         total_errors += len(result.errors)

@@ -1,9 +1,10 @@
 """Validate a ``requirements.txt`` -- pip's dependency-consumption surface.
 
 Line-oriented with accurate 1-based line numbers. Validates ordinary
-requirements as PEP 508, warns on unpinned dependencies, and -- mirroring the
-pip.conf validator -- treats credentials embedded in an index URL and
-``--trusted-host`` as ALWAYS errors (see :data:`SECURITY_CODES`).
+requirements as PEP 508, flags unpinned dependencies as errors by default
+(the cross-tool ``pinned-versions`` rule -- relax via ``.dependably``), and --
+mirroring the pip.conf validator -- treats credentials embedded in an index URL
+and ``--trusted-host`` as ALWAYS errors (see :data:`SECURITY_CODES`).
 """
 
 from __future__ import annotations
@@ -12,14 +13,12 @@ import re
 from typing import Any, Iterator, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
 
-from ._pep508 import is_valid_pep508
+from ._pep508 import is_pinned_spec, is_valid_pep508
 from .pip_conf_validator import PUBLIC_INDEX_HOSTS, _is_env_ref, _redact
 from .result import ValidationResult
 
 SECURITY_CODES: frozenset = frozenset({"REQ_PLAINTEXT_SECRET", "REQ_TRUSTED_HOST", "REQ_UNTRUSTED_INDEX"})
 
-# Pinned to an exact version (``==`` or ``===``).
-_PINNED_RE = re.compile(r"(===|==)")
 # Lines that are URLs / VCS / editable installs rather than name specifiers.
 _URL_REQUIREMENT_RE = re.compile(r"^\s*(-e\s|--editable\s|git\+|hg\+|svn\+|bzr\+|https?://|file:)")
 # An option line, e.g. ``--index-url https://...`` or ``-i https://...``.
@@ -139,11 +138,15 @@ def _check_requirement_line(
     if not is_valid_pep508(spec):
         r.add_error(f"invalid requirement: {line!r}", "REQ_INVALID", line=lineno)
         return
-    # Detect the pin on the requirement, ignoring any `==` inside an environment
-    # marker (the text after `;`).
-    marker_free = spec.split(";", 1)[0]
-    if not _PINNED_RE.search(marker_free):
-        r.add_warning(f"unpinned dependency {line!r} (no == pin)", "REQ_UNPINNED", line=lineno)
+    # Unpinned ranges are errors by default (cross-tool `pinned-versions` rule;
+    # a `==` inside an environment marker after `;` is not a pin).
+    if not is_pinned_spec(spec):
+        r.add_error(
+            f"unpinned dependency {line!r} (no == pin) -- pin the version, or set "
+            'pycheck.rules["pinned-versions"] to "warn"/"off" in .dependably',
+            "REQ_UNPINNED",
+            line=lineno,
+        )
 
 
 def _check_option(line: str, lineno: int, includes: list[str], r: ValidationResult, trusted: frozenset) -> None:

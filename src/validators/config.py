@@ -65,7 +65,50 @@ KNOWN_RULES = [
     "valid-pyproject",
     "valid-pip-conf",
     "valid-requirements",
+    # Cross-tool rule: dependency ranges must be exact pins. Error by default
+    # (suite parity with npm-check / nucheck); relax per-repo via this map.
+    "pinned-versions",
 ]
+
+# Finding codes owned by the cross-tool ``pinned-versions`` rule rather than
+# their artifact's validation family.
+_PINNED_VERSION_CODES = frozenset({"REQ_UNPINNED", "PP_UNPINNED"})
+
+# Finding-code prefix -> config-addressable validation rule family.
+_PREFIX_RULES = (
+    ("REQ_", "valid-requirements"),
+    ("PP_", "valid-pyproject"),
+    ("PIP_", "valid-pip-conf"),
+)
+
+
+def rule_for_code(code: str) -> Optional[str]:
+    """Map a finding code to its config-addressable rule id (spec §4.4).
+
+    ``REQ_UNPINNED``/``PP_UNPINNED`` belong to the cross-tool ``pinned-versions``
+    rule; every other validator code maps to its artifact's rule family by
+    prefix. Codes outside the registry (operational findings) return ``None`` --
+    they are never remappable.
+    """
+    if code in _PINNED_VERSION_CODES:
+        return "pinned-versions"
+    for prefix, rule_id in _PREFIX_RULES:
+        if code.startswith(prefix):
+            return rule_id
+    return None
+
+
+def rule_severity(rules: Dict[str, Any], rule_id: Optional[str]) -> Optional[str]:
+    """Return the configured severity for ``rule_id``, or ``None`` if unset.
+
+    Accepts both entry forms (``"warn"`` or ``["warn", {options}]``); entries
+    were validated at load time and options are ignored (pycheck defines none).
+    """
+    if rule_id is None or rule_id not in rules:
+        return None
+    entry = rules[rule_id]
+    return str(entry[0]) if isinstance(entry, list) else str(entry)
+
 
 # Keys pycheck recognizes inside ``common`` / its own section. Unknown keys warn.
 _KNOWN_SECTION_KEYS = frozenset(
