@@ -36,12 +36,17 @@ dependencies = []
 
 # Dev deps are exact-pinned: pycheck's own pinned-versions rule gates this
 # file (dogfooding), the same way it gates every validated pyproject.toml.
+# Marker-split pins keep the 3.9 CI leg installable (pytest 9 / black 26 /
+# mypy 2 all require Python >= 3.10) while newer interpreters get current tools.
 [project.optional-dependencies]
 dev = [
-    "pytest==9.1.1",
-    "black==26.5.1",
+    "pytest==9.1.1; python_version >= '3.10'",
+    "pytest==8.4.2; python_version < '3.10'",
+    "black==26.5.1; python_version >= '3.10'",
+    "black==25.11.0; python_version < '3.10'",
     "flake8==7.3.0",
-    "mypy==2.1.0",
+    "mypy==2.1.0; python_version >= '3.10'",
+    "mypy==1.19.1; python_version < '3.10'",
     # Lets the pyproject validator run on Python < 3.11 (stdlib tomllib is 3.11+).
     # Dev-only: runtime dependencies stay empty.
     "tomli==2.4.1; python_version < '3.11'",
